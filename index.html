@@ -73,7 +73,7 @@
 </section>
 
 <div id="name" class="hud" role="status"></div>
-<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>7</kbd> выбор · <kbd>F</kbd> весь экран</div>
+<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>7</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>F</kbd> весь экран</div>
 
 <script>
 "use strict";
@@ -531,7 +531,7 @@ void main(){
     float h = hash(id + seed), h2 = hash(id + seed + 41.7);
     if (h > .62) {
       vec2 q = f - vec2(.25 + .5 * h2, .25 + .5 * fract(h2 * 7.3));
-      q = vec2(dot(q, dir) / (1. + u_streak * 3.), dot(q, vec2(-dir.y, dir.x)));   // на скорости вытягиваются от центра
+      q = vec2(dot(q, dir) / (1. + u_streak * 5.5 * depth * depth), dot(q, vec2(-dir.y, dir.x)));   // далёкая звезда точка, вытягивается по мере приближения
       float r = .018 + .022 * fract(h2 * 3.7);
       float star = smoothstep(r, r * .3, length(q));
       float fade = smoothstep(0., .3, depth) * smoothstep(1., .84, depth);
@@ -628,66 +628,100 @@ cgl.addEventListener("webglcontextrestored", () => { stage.gl = null; if (stage.
 
 /* ───────────── Вид 5: бактерии ───────────── */
 const rnd = (a, b) => a + Math.random() * (b - a);
-// Три штамма, каждый питается своей частью спектра: палочки басом, вибрионы серединой, кокки верхами
-const STRAINS = [
-  { band: .12, len0: .034, len1: .072, w: .016, curve: .04, swim: .9, flag: true, rim: "#8df5d0", body: "#1c7a66", core: "#d8fff0" },
-  { band: .48, len0: .022, len1: .048, w: .012, curve: .28, swim: 1.3, flag: true, rim: "#ffd27a", body: "#8a5a16", core: "#fff0c2" },
-  { band: .82, len0: .003, len1: .02, w: .015, curve: 0, swim: .35, flag: false, rim: "#d8a6ff", body: "#5a2f92", core: "#f3e6ff" },
+const SHAPES = {
+  rod: { len0: .034, len1: .072, w: .016, curve: .04, swim: .9, flag: true },
+  vibrio: { len0: .022, len1: .048, w: .012, curve: .28, swim: 1.3, flag: true },
+  coccus: { len0: .003, len1: .02, w: .015, curve: 0, swim: .35, flag: false },
+  spirillum: { len0: .04, len1: .085, w: .008, curve: 0, wave: .011, swim: 1.5, flag: true },
+  filament: { len0: .055, len1: .12, w: .009, curve: .12, swim: .55, flag: false },
+  yeast: { len0: .002, len1: .018, w: .026, curve: 0, swim: .2, flag: false },
+};
+// Поколения: в каждом три штамма. Первый питается басом, второй серединой, третий верхами
+const strain = (band, kind, rim, body, core) => ({ band, rim, body, core, ...SHAPES[kind] });
+const trio = (tint, a, b, c) => ({ tint, strains: [strain(.12, ...a), strain(.48, ...b), strain(.82, ...c)] });
+const STAGES = [
+  trio([15, 32, 28], ["rod", "#8df5d0", "#1c7a66", "#d8fff0"], ["vibrio", "#ffd27a", "#8a5a16", "#fff0c2"], ["coccus", "#d8a6ff", "#5a2f92", "#f3e6ff"]),
+  trio([34, 20, 24], ["rod", "#ff9f8f", "#8a2f2a", "#ffe2dc"], ["spirillum", "#8fe8ff", "#1c6f8a", "#e2f9ff"], ["coccus", "#c9f27a", "#4f7a1c", "#efffd0"]),
+  trio([28, 19, 38], ["filament", "#ff8fd0", "#7a1f5f", "#ffd9ef"], ["yeast", "#ffe28a", "#7a5f12", "#fff4c9"], ["rod", "#b6d2ff", "#2a4a8a", "#e6efff"]),
+  trio([14, 32, 20], ["spirillum", "#7af2a0", "#146b3a", "#dcffe7"], ["rod", "#ffb070", "#8a4415", "#ffe6d0"], ["yeast", "#ffb6d9", "#8a3060", "#ffe6f2"]),
+  trio([13, 25, 38], ["filament", "#c8f4ff", "#2a6f8a", "#ecfbff"], ["vibrio", "#ff8a7a", "#7a1f1a", "#ffdcd6"], ["rod", "#f5ee8a", "#6f6a14", "#fffbd0"]),
 ];
+const COLONY_LIMIT = 340, SURVIVORS = 12;
+
 const bacteria = {
   title: "Бактерии",
   canvas: c2d,
-  cells: [], specks: [], heat: 0, vigor: 0, seen: 0, cull: 0,
+  cells: [], specks: [], bits: [], heat: 0, seen: 0, generation: 1, wave: null, tint: STAGES[0].tint.slice(),
+  stage() { return STAGES[(this.generation - 1) % STAGES.length]; },
   spawn(st, x, y, a, g) {
-    this.cells.push({ st, x, y, a, g, kx: 0, ky: 0, phase: rnd(0, 7), bend: rnd(.5, 1) * (Math.random() < .5 ? -1 : 1), life: 1, dying: false });
+    this.cells.push({ st, x, y, a, g, kx: 0, ky: 0, phase: rnd(0, 7), bend: rnd(.5, 1) * (Math.random() < .5 ? -1 : 1), life: 1, flash: 0, dying: false, keep: null });
   },
   build() {
-    [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2].forEach(i => this.spawn(STRAINS[i], rnd(-.45, .45), rnd(-.38, .38), rnd(0, 7), rnd(0, .7)));
+    const st = this.stage().strains;
+    [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2].forEach(i => this.spawn(st[i], rnd(-.45, .45), rnd(-.38, .38), rnd(0, 7), rnd(0, .7)));
     for (let i = 0; i < 70; i++) this.specks.push({ x: rnd(-1.1, 1.1), y: rnd(-.55, .55), r: rnd(.5, 2.6), a: rnd(.04, .2), p: rnd(0, 7) });
+  },
+  // Предел достигнут: волна уничтожает колонию, выжившие мутируют в штаммы следующего поколения
+  nextGeneration(field) {
+    this.generation++;
+    const next = this.stage().strains, pool = this.cells.filter(c => !c.dying);
+    for (let i = 0; i < SURVIVORS && pool.length; i++) {
+      const c = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+      c.keep = next[i < 6 ? 0 : i < 10 ? 1 : 2];
+    }
+    const ox = rnd(-.22, .22), oy = rnd(-.18, .18);
+    this.wave = { x: ox, y: oy, r: 0, end: field + Math.hypot(ox, oy) + .12, color: next[0].rim };
+    flash($("name"), `Поколение ${this.generation}`, 1800);
   },
   enter() { this.seen = A.beats; },
   draw(dt, t) {
     if (!this.cells.length) this.build();
     const x = layer.x, S = Math.min(W, H), cx = W / 2, cy = H / 2, hh = H / S / 2;
     const field = .47 * Math.max(W, H) / S;                     // поле зрения окуляра
-    const list = this.cells;
+    const list = this.cells, wave = this.wave;
 
     const heatTo = A.act * (.04 + A.energy * 1.15);
     this.heat += (heatTo - this.heat) * follow(dt, heatTo > this.heat ? .08 : .9);
     const heat = this.heat, pace = .03 + heat * 1.5;
-    // Сила звука задаёт размер колонии: громче значит больше клеток
-    const vigorTo = A.act * A.energy;
-    this.vigor += (vigorTo - this.vigor) * follow(dt, vigorTo > this.vigor ? .5 : 3.5);
-    const target = 14 + 330 * Math.pow(clamp(this.vigor * 1.25), 1.2);
 
     const alive = list.reduce((n, c) => n + (c.dying ? 0 : 1), 0);
-    if (alive > target) {                                        // лишние клетки погибают постепенно, начиная со старых
-      this.cull += dt * ((alive - target) * .4 + 1);
-      for (let i = 0; i < list.length && this.cull >= 1; i++) if (!list[i].dying) { list[i].dying = true; this.cull--; }
-    } else this.cull = 0;
+    if (!wave && alive >= COLONY_LIMIT) this.nextGeneration(field);
+    if (wave) {
+      wave.r += dt * .55;
+      for (const c of list) {
+        if (c.dying || Math.hypot(c.x - wave.x, c.y - wave.y) > wave.r) continue;
+        if (c.keep) { c.st = c.keep; c.keep = null; c.flash = 1; c.g = rnd(0, .3); continue; }
+        c.dying = true;
+        for (let k = 0; k < 3 && this.bits.length < 700; k++) {     // клетка лопается
+          const a = rnd(0, 7), sp = rnd(.04, .22);
+          this.bits.push({ x: c.x, y: c.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, r: rnd(.7, 1.9), color: c.st.rim });
+        }
+      }
+      if (wave.r > wave.end) this.wave = null;
+    }
 
     let beat = 0;
-    if (A.beats !== this.seen) { this.seen = A.beats; beat = A.bass * .1 * A.act; }
+    if (A.beats !== this.seen) { this.seen = A.beats; beat = (.02 + A.bass * .06) * A.act; }
 
-    let room = alive;
     for (let i = list.length - 1; i >= 0; i--) {
       const c = list[i], st = c.st, level = sample(st.band) * A.act;
-      if (c.dying) { c.life -= dt / .7; if (c.life <= 0) { list.splice(i, 1); continue; } }
-      else if (room < target) {
-        c.g += dt * A.act * (.04 + level * 1.15) + beat;
+      c.flash *= Math.exp(-dt * 1.6);
+      if (c.dying) { c.life -= dt / .45; if (c.life <= 0) { list.splice(i, 1); continue; } }
+      else if (!this.wave) {                                     // от силы звука зависит скорость роста
+        c.g += dt * A.act * (.04 + level * .24) + beat;
         if (c.g >= 1) {                                          // бинарное деление
           const L = st.len0 + (st.len1 - st.len0), ux = Math.cos(c.a), uy = Math.sin(c.a), push = .12 + level * .22;
           this.spawn(st, c.x + ux * L * .3, c.y + uy * L * .3, c.a + rnd(-.3, .3), rnd(0, .08));
           const n = list[list.length - 1];
           n.kx = ux * push; n.ky = uy * push;
           c.x -= ux * L * .3; c.y -= uy * L * .3; c.kx -= ux * push; c.ky -= uy * push;
-          c.g = rnd(0, .08); room++;
+          c.g = rnd(0, .08);
         }
       }
       c.a += rnd(-1, 1) * dt * (1.2 + heat * 7);
       const v = .018 * st.swim * pace;
-      c.x += (Math.cos(c.a) * v + c.kx + rnd(-.004, .004)) * dt * 1;
-      c.y += (Math.sin(c.a) * v + c.ky + rnd(-.004, .004)) * dt * 1;
+      c.x += (Math.cos(c.a) * v + c.kx + rnd(-.004, .004)) * dt;
+      c.y += (Math.sin(c.a) * v + c.ky + rnd(-.004, .004)) * dt;
       c.kx *= Math.exp(-dt * 3); c.ky *= Math.exp(-dt * 3);
       c.phase += dt * (2 + heat * 26);
     }
@@ -715,10 +749,13 @@ const bacteria = {
       c.y = clamp(c.y, -hh + .02, hh - .02);
     }
 
-    const bg = main.createRadialGradient(cx, cy, 0, cx, cy, field * S);
+    // Цвет среды плавно меняется вместе с поколением
+    const tintTo = this.stage().tint;
+    for (let i = 0; i < 3; i++) this.tint[i] += (tintTo[i] - this.tint[i]) * follow(dt, .8);
     const lift = (A.bass * .5 + A.beat * .2 * calm) * A.act;
-    bg.addColorStop(0, `rgb(${15 + lift * 14},${32 + lift * 28},${28 + lift * 22})`);
-    bg.addColorStop(.75, "#0a1512"); bg.addColorStop(1, "#050a09");
+    const shade = k => `rgb(${this.tint.map((v, i) => Math.round(v * k + lift * [14, 28, 22][i] * k)).join(",")})`;
+    const bg = main.createRadialGradient(cx, cy, 0, cx, cy, field * S);
+    bg.addColorStop(0, shade(1)); bg.addColorStop(.75, shade(.55)); bg.addColorStop(1, shade(.28));
     main.fillStyle = bg; main.fillRect(0, 0, W, H);
 
     x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "source-over"; x.globalAlpha = 1;
@@ -733,17 +770,25 @@ const bacteria = {
     }
 
     x.lineCap = "round"; x.lineJoin = "round";
-    const line = (ax, ay, bx, by, bend) => {
+    const line = (ax, ay, bx, by, bend, wavy, phase) => {
       x.beginPath(); x.moveTo(ax, ay);
-      if (bend) x.quadraticCurveTo((ax + bx) / 2 + bend[0], (ay + by) / 2 + bend[1], bx, by); else x.lineTo(bx, by);
+      if (wavy) {                                                // спирилла извивается всем телом
+        const dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) + 1e-4, nx = -dy / l, ny = dx / l;
+        for (let k = 1; k <= 10; k++) {
+          const u = k / 10, o = Math.sin(u * 12.6 + phase) * wavy * Math.sin(u * Math.PI);
+          x.lineTo(ax + dx * u + nx * o, ay + dy * u + ny * o);
+        }
+      } else if (bend) x.quadraticCurveTo((ax + bx) / 2 + bend[0], (ay + by) / 2 + bend[1], bx, by);
+      else x.lineTo(bx, by);
       x.stroke();
     };
-    for (const st of STRAINS) for (const c of list) {
-      if (c.st !== st) continue;
-      const level = sample(st.band) * A.act;
-      const px = cx + c.x * S, py = cy + c.y * S, len = (st.len0 + (st.len1 - st.len0) * c.g) * S, w = st.w * S * (1 + level * .16);
+    for (const c of list) {
+      const st = c.st, level = sample(st.band) * A.act;
+      const px = cx + c.x * S, py = cy + c.y * S, shrink = c.dying ? .6 + c.life * .4 : 1;
+      const len = (st.len0 + (st.len1 - st.len0) * c.g) * S * shrink, w = st.w * S * (1 + level * .16 + c.flash * .5) * shrink;
       const ux = Math.cos(c.a), uy = Math.sin(c.a), ex = ux * len / 2, ey = uy * len / 2;
       const ax = px - ex, ay = py - ey, bx = px + ex, by = py + ey, fade = c.dying ? c.life : 1;
+      const wavy = st.wave ? st.wave * S : 0;
 
       if (st.flag) {                                             // жгутик
         x.globalAlpha = .34 * fade; x.strokeStyle = st.rim; x.lineWidth = Math.max(1, S * .0012);
@@ -762,15 +807,33 @@ const bacteria = {
         ? [[ax, ay, px - ux * gap, py - uy * gap, null], [px + ux * gap, py + uy * gap, bx, by, null]]
         : [[ax, ay, bx, by, st.curve ? [-uy * len * st.curve * c.bend, ux * len * st.curve * c.bend] : null]];
       const narrow = pinch > 0 ? 1 - pinch * .1 : 1;
-      x.strokeStyle = st.rim; x.lineWidth = w * narrow; x.globalAlpha = (.6 + level * .4) * fade;
-      for (const q of segs) line(...q);
+      x.strokeStyle = st.rim; x.lineWidth = w * narrow; x.globalAlpha = clamp(.6 + level * .4 + c.flash) * fade;
+      for (const q of segs) line(q[0], q[1], q[2], q[3], q[4], wavy, c.phase);
       x.strokeStyle = st.body; x.lineWidth = w * .68 * narrow; x.globalAlpha = .96 * fade;
-      for (const q of segs) line(...q);
+      for (const q of segs) line(q[0], q[1], q[2], q[3], q[4], wavy, c.phase);
+      if (wavy) continue;
       x.strokeStyle = st.core; x.lineWidth = w * .24; x.globalAlpha = (.3 + level * .55) * fade;
       for (const q of segs) {                                     // нуклеоид внутри клетки
         const mx = (q[0] + q[2]) / 2, my = (q[1] + q[3]) / 2, tx = (q[2] - q[0]) * .24, ty = (q[3] - q[1]) * .24;
         line(mx - tx, my - ty, mx + tx, my + ty, null);
       }
+    }
+
+    for (let i = this.bits.length - 1; i >= 0; i--) {             // осколки лопнувших клеток
+      const b = this.bits[i];
+      b.life -= dt / .9;
+      if (b.life <= 0) { this.bits.splice(i, 1); continue; }
+      b.x += b.vx * dt; b.y += b.vy * dt; b.vx *= Math.exp(-dt * 2.5); b.vy *= Math.exp(-dt * 2.5);
+      x.globalAlpha = b.life * .85; x.fillStyle = b.color;
+      x.beginPath(); x.arc(cx + b.x * S, cy + b.y * S, b.r * dpr, 0, 7); x.fill();
+    }
+
+    if (this.wave) {                                              // фронт волны
+      const f = this.wave;
+      x.globalAlpha = .75 * calm; x.strokeStyle = f.color; x.lineWidth = S * .007;
+      x.beginPath(); x.arc(cx + f.x * S, cy + f.y * S, f.r * S, 0, 7); x.stroke();
+      x.globalAlpha = .2 * calm; x.lineWidth = S * .04;
+      x.beginPath(); x.arc(cx + f.x * S, cy + f.y * S, Math.max(0, f.r - .03) * S, 0, 7); x.stroke();
     }
     x.globalAlpha = 1;
     present(.3 + A.energy * .22);
@@ -782,11 +845,11 @@ const bacteria = {
     const barW = S * .1, by = H - S * .05, ink = "rgba(214,235,224,.78)";
     const fontPx = Math.round(Math.max(11, S * .016));
     main.fillStyle = "rgba(4,9,8,.72)";                          // подпись читается и поверх густой колонии
-    main.fillRect(cx - S * .11, by - fontPx - S * .018, S * .22, fontPx + S * .03);
+    main.fillRect(cx - S * .18, by - fontPx - S * .018, S * .36, fontPx + S * .03);
     main.fillStyle = ink; main.fillRect(cx - barW / 2, by, barW, Math.max(1.5, 1.5 * dpr));
     main.font = `${fontPx}px ${getComputedStyle(document.body).fontFamily}`;
     main.textAlign = "center"; main.textBaseline = "bottom";
-    main.fillText(`10 мкм · клеток: ${alive}`, cx, by - 5 * dpr);
+    main.fillText(`Поколение ${this.generation} · 10 мкм · клеток: ${alive}`, cx, by - 5 * dpr);
   },
 };
 
@@ -858,13 +921,8 @@ void main(){
 const paint = {
   title: "Краски",
   canvas: $("cfl"),
-  dark: (() => { try { return localStorage.getItem("eq-paint-light") !== "1"; } catch { return true; } })(),
-  label() { return `Краски · ${this.dark ? "тёмный" : "светлый"} фон · D сменить`; },
-  toggle() {
-    this.dark = !this.dark;
-    try { localStorage.setItem("eq-paint-light", this.dark ? "0" : "1"); } catch {}
-    flash($("name"), this.label(), 1800);
-  },
+  variants: ["тёмный фон", "светлый фон"], variant: 0,
+  get dark() { return this.variant === 0; },
   ok: false, gl: null, P: {}, vel: null, dye: null, prs: null, dvg: null, crl: null,
   simW: 0, simH: 150, dyeW: 0, dyeH: 620, seen: 0, turn: 0, phase: 0, slow: 0, slowFor: 0, seeded: false,
 
@@ -985,17 +1043,19 @@ const paint = {
     if (!this.seeded) this.seed();
 
     const h = clamp(dt, .008, .025);
+    // Сила звука задаёт скорость течения: громко значит бурно, в тишине краска быстро замирает
+    const drive = clamp(A.act * A.energy * 1.8), flow = .15 + drive * 1.6;
     this.inject(h, t);
 
     this.use("curl", {}, { u: this.vel.r.tex }); this.blit(this.crl);
-    this.use("vort", { amt: 12, dt: h }, { u: this.vel.r.tex, c: this.crl.tex }); this.blit(this.vel.w); this.vel.swap();
+    this.use("vort", { amt: 3 + drive * 20, dt: h }, { u: this.vel.r.tex, c: this.crl.tex }); this.blit(this.vel.w); this.vel.swap();
     this.use("div", {}, { u: this.vel.r.tex }); this.blit(this.dvg);
     this.use("fade", { keep: .8 }, { s: this.prs.r.tex }); this.blit(this.prs.w); this.prs.swap();
     for (let i = 0; i < 18; i++) { this.use("jacobi", {}, { p: this.prs.r.tex, d: this.dvg.tex }); this.blit(this.prs.w); this.prs.swap(); }
     this.use("grad", {}, { p: this.prs.r.tex, u: this.vel.r.tex }); this.blit(this.vel.w); this.vel.swap();
-    this.use("advect", { dt: h, keep: Math.exp(-h * .55) }, { u: this.vel.r.tex, s: this.vel.r.tex }); this.blit(this.vel.w); this.vel.swap();
+    this.use("advect", { dt: h * flow, keep: Math.exp(-h * (.35 + (1 - drive) * 3)) }, { u: this.vel.r.tex, s: this.vel.r.tex }); this.blit(this.vel.w); this.vel.swap();
     // Краска бледнеет только пока играет музыка, поэтому в тишине картина остаётся на холсте
-    this.use("advect", { dt: h, keep: Math.exp(-h * A.act / (this.dark ? 3.2 : 7)) }, { u: this.vel.r.tex, s: this.dye.r.tex }); this.blit(this.dye.w); this.dye.swap();
+    this.use("advect", { dt: h * flow, keep: Math.exp(-h * A.act / (this.dark ? 3.2 : 7)) }, { u: this.vel.r.tex, s: this.dye.r.tex }); this.blit(this.dye.w); this.dye.swap();
 
     const save = this.tx; this.tx = [1 / this.dyeW, 1 / this.dyeH];
     this.use("show", { dark: this.dark ? 1 : 0 }, { s: this.dye.r.tex }); this.blit(null);
@@ -1014,6 +1074,25 @@ const remember = {
   set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },
 };
 let cur = clamp(remember.get(), 0, views.length - 1);
+
+// Вариации: у вида может быть несколько вариантов сцены, они листаются стрелками вверх и вниз
+const variantStore = {
+  read() { try { return JSON.parse(localStorage.getItem("eq-variants")) || {}; } catch { return {}; } },
+  write(map) { try { localStorage.setItem("eq-variants", JSON.stringify(map)); } catch {} },
+};
+{
+  const saved = variantStore.read();
+  for (const v of views) if (v.variants) v.variant = clamp(saved[v.title] ?? v.variant ?? 0, 0, v.variants.length - 1);
+}
+const labelOf = v => v.variants && v.variants.length > 1 ? `${v.title} · ${v.variants[v.variant]}` : v.title;
+function shiftVariant(step) {
+  const v = views[cur], n = v.variants ? v.variants.length : 1;
+  if (n < 2) { flash($("name"), `${v.title}: пока одна вариация`, 1600); return; }
+  v.variant = (v.variant + step + n) % n;
+  const map = variantStore.read(); map[v.title] = v.variant; variantStore.write(map);
+  if (v.onVariant) v.onVariant();
+  flash($("name"), `${labelOf(v)} (${v.variant + 1} из ${n})`, 1800);
+}
 let started = false;
 
 function show(i, announce) {
@@ -1024,7 +1103,7 @@ function show(i, announce) {
   v.enter();
   if (announce) {
     $("veil").animate([{ opacity: 1 }, { opacity: 0 }], { duration: calm < 1 ? 1 : 320, easing: "ease-out" });
-    flash($("name"), v.label ? v.label() : v.title, v.label ? 2200 : 1400);
+    flash($("name"), labelOf(v), 1600);
   }
 }
 
@@ -1138,7 +1217,8 @@ addEventListener("keydown", e => {
   else if (k === "ArrowLeft") show(cur - 1, true);
   else if (/^[1-9]$/.test(k) && +k <= views.length) show(+k - 1, true);
   else if (e.code === "KeyF") toggleFull();
-  else if (e.code === "KeyD" && views[cur] === paint) paint.toggle();
+  else if (k === "ArrowUp") shiftVariant(1);
+  else if (k === "ArrowDown") shiftVariant(-1);
   else return;
   e.preventDefault();
 });

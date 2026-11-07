@@ -63,6 +63,7 @@
 <body>
 <canvas id="c2d" aria-hidden="true"></canvas>
 <canvas id="cgl" aria-hidden="true" hidden></canvas>
+<canvas id="cfl" aria-hidden="true" hidden></canvas>
 <div id="veil"></div>
 
 <section id="gate">
@@ -72,7 +73,7 @@
 </section>
 
 <div id="name" class="hud" role="status"></div>
-<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> выбор · <kbd>F</kbd> весь экран</div>
+<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>6</kbd> выбор · <kbd>F</kbd> весь экран</div>
 
 <script>
 "use strict";
@@ -372,7 +373,7 @@ const ring = {
 
 /* ───────────── Вид 3: свет (шейдер) ───────────── */
 const FRAG = `precision highp float;
-uniform vec2 u_res; uniform float u_t, u_bass, u_mid, u_high, u_beat, u_ring, u_act;
+uniform vec2 u_res; uniform float u_t, u_bass, u_mid, u_high, u_beat, u_ring, u_act; uniform vec3 u_c1, u_c2, u_c3;
 const mat2 ROT = mat2(.8, .6, -.6, .8);
 float hash(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.23); return fract(p.x * p.y); }
 float noise(vec2 p){
@@ -395,9 +396,9 @@ void main(){
   float f = fbm(s + (2.3 + u_mid) * r);
 
   vec3 c = vec3(.012, .022, .07);
-  c = mix(c, vec3(.03, .27, .36), smoothstep(.14, .55, f));
-  c = mix(c, vec3(.86, .10, .46), smoothstep(.38, .82, length(q) * f * 1.75));
-  c = mix(c, vec3(1., .66, .18), smoothstep(.5, .88, r.x * f * 2.05));
+  c = mix(c, u_c1, smoothstep(.14, .55, f));
+  c = mix(c, u_c2, smoothstep(.38, .82, length(q) * f * 1.75));
+  c = mix(c, u_c3, smoothstep(.5, .88, r.x * f * 2.05));
 
   float ridge = pow(1. - abs(2. * f - 1.), 7.);              // тонкие светящиеся нити оживают от верхов
   c += vec3(1., .78, .55) * ridge * (.03 + u_high * .5) * u_act;
@@ -413,56 +414,502 @@ void main(){
   gl_FragColor = vec4(c, 1.);
 }`;
 
-const light = {
-  title: "Свет",
-  canvas: cgl,
-  ok: false, gl: null, u: null, flow: 40, ring: 0, seen: 0, scale: .7, slow: 0, slowFor: 0, cw: 0, ch: 0,
+// Общая сцена для шейдерных видов: один контекст WebGL и несколько программ
+const stage = {
+  gl: null, views: [],
   init() {
     const gl = this.gl = this.gl || cgl.getContext("webgl", { antialias: false, alpha: false, powerPreference: "high-performance" });
-    if (!gl) return;
-    const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
-    const vs = sh(gl.VERTEX_SHADER, "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}");
-    const fs = sh(gl.FRAGMENT_SHADER, FRAG);
-    const pr = gl.createProgram();
-    gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
-    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { console.error(gl.getShaderInfoLog(fs)); return; }
-    gl.useProgram(pr);
+    if (!gl) return false;
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(pr, "a");
-    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    this.u = {};
-    for (const n of ["res", "t", "bass", "mid", "high", "beat", "ring", "act"]) this.u[n] = gl.getUniformLocation(pr, "u_" + n);
-    this.ok = true; this.cw = 0;
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    return true;
   },
-  enter() { this.seen = A.beats; this.slow = 0; this.slowFor = 0; },
-  draw(dt) {
-    if (!this.ok) return;
+  program(frag) {
     const gl = this.gl;
-    // Если машина не успевает, снижаем разрешение, а не плавность
-    this.slow += (dt * 1000 - this.slow) * follow(dt, .5);
-    this.slowFor = this.slow > 26 ? this.slowFor + dt : 0;
-    if (this.slowFor > 1 && this.scale > .3) { this.scale *= .8; this.slowFor = 0; this.cw = 0; }
-    const cw = Math.max(1, Math.round(innerWidth * this.scale)), ch = Math.max(1, Math.round(innerHeight * this.scale));
-    if (cw !== this.cw || ch !== this.ch) { cgl.width = this.cw = cw; cgl.height = this.ch = ch; gl.viewport(0, 0, cw, ch); }
-
-    this.flow += dt * (.012 + A.act * (.045 + .17 * A.energy));   // в тишине почти замирает
-    if (A.beats !== this.seen) { this.seen = A.beats; this.ring = 0; }
-    this.ring += dt * .75;
-    const u = this.u;
-    gl.uniform2f(u.res, cw, ch);
-    gl.uniform1f(u.t, this.flow);
-    gl.uniform1f(u.bass, A.bass * A.act); gl.uniform1f(u.mid, A.mid * A.act); gl.uniform1f(u.high, A.high * A.act);
-    gl.uniform1f(u.beat, A.beat * A.act * calm); gl.uniform1f(u.ring, this.ring); gl.uniform1f(u.act, A.act);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+    const fs = sh(gl.FRAGMENT_SHADER, frag), pr = gl.createProgram();
+    gl.attachShader(pr, sh(gl.VERTEX_SHADER, "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}"));
+    gl.attachShader(pr, fs);
+    gl.bindAttribLocation(pr, 0, "a");
+    gl.linkProgram(pr);
+    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { console.error(gl.getShaderInfoLog(fs)); return null; }
+    return pr;
   },
 };
-cgl.addEventListener("webglcontextlost", e => { e.preventDefault(); light.ok = false; });
-cgl.addEventListener("webglcontextrestored", () => light.init());
+
+// Палитры «Света»: глубина, основной цвет, самый горячий
+const LIGHT_PALETTES = [
+  [[.03, .27, .36], [.86, .10, .46], [1, .66, .18]],     // бирюза, малина, золото
+  [[.02, .16, .50], [.04, .66, .78], [.82, .96, .78]],   // океан
+  [[.24, .03, .50], [.96, .18, .26], [1, .74, .18]],     // закат
+  [[.00, .28, .24], [.14, .78, .42], [.96, .90, .30]],   // лес
+  [[.10, .08, .52], [.68, .16, .92], [1, .50, .68]],     // орхидея
+];
+function shaderView({ title, frag, scale, speed, palettes, paletteSpeed }) {
+  return {
+    title, canvas: cgl, ok: false, scale, flow: 40, hue: 0, ring: 0, seen: 0, slow: 0, slowFor: 0, pr: null, u: null,
+    init() {
+      this.pr = stage.program(frag);
+      if (!this.pr) return;
+      this.u = {};
+      for (const n of ["res", "t", "bass", "mid", "high", "beat", "ring", "act", "streak", "c1", "c2", "c3"]) this.u[n] = stage.gl.getUniformLocation(this.pr, "u_" + n);
+      this.ok = true;
+    },
+    enter() { this.seen = A.beats; this.slow = 0; this.slowFor = 0; },
+    draw(dt) {
+      if (!this.ok) return;
+      const gl = stage.gl;
+      // Если машина не успевает, снижаем разрешение, а не плавность
+      this.slow += (dt * 1000 - this.slow) * follow(dt, .5);
+      this.slowFor = this.slow > 26 ? this.slowFor + dt : 0;
+      if (this.slowFor > 1 && this.scale > .3) { this.scale *= .8; this.slowFor = 0; }
+      const cw = Math.max(1, Math.round(innerWidth * this.scale)), ch = Math.max(1, Math.round(innerHeight * this.scale));
+      if (cgl.width !== cw || cgl.height !== ch) { cgl.width = cw; cgl.height = ch; }
+      gl.viewport(0, 0, cw, ch);
+      gl.useProgram(this.pr);
+
+      const v = speed();
+      this.flow += dt * v;
+      if (A.beats !== this.seen) { this.seen = A.beats; this.ring = 0; }
+      this.ring += dt * .75;
+      const u = this.u;
+      gl.uniform2f(u.res, cw, ch);
+      gl.uniform1f(u.t, this.flow);
+      gl.uniform1f(u.bass, A.bass * A.act); gl.uniform1f(u.mid, A.mid * A.act); gl.uniform1f(u.high, A.high * A.act);
+      gl.uniform1f(u.beat, A.beat * A.act * calm); gl.uniform1f(u.ring, this.ring); gl.uniform1f(u.act, A.act);
+      gl.uniform1f(u.streak, clamp(v * 1.5));
+      if (palettes) {   // палитры плавно перетекают одна в другую
+        this.hue = (this.hue + dt * paletteSpeed()) % palettes.length;
+        const i = Math.floor(this.hue), k = this.hue - i, e = k * k * (3 - 2 * k), A0 = palettes[i], B0 = palettes[(i + 1) % palettes.length];
+        [u.c1, u.c2, u.c3].forEach((loc, n) => gl.uniform3f(loc, ...A0[n].map((x, j) => x + (B0[n][j] - x) * e)));
+      }
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    },
+  };
+}
+
+const light = shaderView({ title: "Свет", frag: FRAG, scale: .7, speed: () => .012 + A.act * (.045 + .17 * A.energy),   // в тишине почти замирает
+  palettes: LIGHT_PALETTES, paletteSpeed: () => .012 + A.act * (.07 + .26 * A.energy) });   // под музыку новая палитра примерно каждые 5 секунд
+
+/* ───────────── Вид 4: космос ───────────── */
+const SPACE = `precision highp float;
+uniform vec2 u_res; uniform float u_t, u_bass, u_mid, u_high, u_beat, u_ring, u_act, u_streak;
+const mat2 ROT = mat2(.8, .6, -.6, .8);
+float hash(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.23); return fract(p.x * p.y); }
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p), u = f * f * (3. - 2. * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+float fbm(vec2 p){
+  float a = .5, s = 0.;
+  for (int i = 0; i < 4; i++) { s += a * noise(p); p = ROT * p * 2.03 + 17.; a *= .5; }
+  return s;
+}
+void main(){
+  vec2 p = (gl_FragCoord.xy - .5 * u_res) / min(u_res.x, u_res.y);
+  float d = length(p);
+
+  // Туманности: цвет каждой зависит от своей части спектра
+  float drift = u_t * .012;
+  vec2 n = p * 1.35 * (1. - .08 * u_bass);
+  float w = fbm(n + drift);
+  float cloudA = fbm(n + 2.2 * w + vec2(3.1, -drift));
+  float cloudB = fbm(n * 1.6 + 1.7 * w + vec2(7.4, drift * .7));
+  vec3 c = vec3(.006, .008, .032);
+  c += vec3(.05, .05, .24) * smoothstep(.28, .7, w);
+  c += vec3(.40, .11, .70) * smoothstep(.42, .78, cloudA) * (.3 + u_mid * 1.15);
+  c += vec3(.95, .30, .10) * smoothstep(.52, .82, cloudB) * (.1 + u_bass * 1.05);
+  c += vec3(.08, .62, .76) * smoothstep(.5, .8, cloudA * cloudB * 2.1) * (.08 + u_high * .95);
+
+  // Звёзды в полярной сетке: логарифм радиуса даёт честный полёт из одной точки
+  float ang = atan(p.y, p.x) / 6.28318, lr = log(d + .001);
+  for (int i = 0; i < 4; i++) {
+    float fi = float(i), nc = 34. + fi * 24., k = 2.1 + fi * .9;
+    vec2 g = vec2(ang * nc + fi * 11.3, lr * k - u_t * (1. + fi * .28) + fi * 7.1);
+    vec2 id = floor(g), f = fract(g);
+    id.x = mod(id.x, nc);
+    float h = hash(id + fi * 37.), h2 = hash(id + fi * 91. + 3.);
+    if (h > .5) {
+      vec2 q = f - vec2(.25 + .5 * h2, .25 + .5 * fract(h2 * 7.3));
+      q.x *= 6.283 * k / nc;
+      q.y /= 1. + u_streak * 3.;
+      float r = (.02 + .036 * h2 * h2) / (1. + d * 1.7);       // иначе у края звёзды разрастаются в пятна
+      float star = smoothstep(r, r * .45, length(q));
+      vec3 tint = mix(vec3(.72, .84, 1.), vec3(1., .86, .68), step(.72, h));
+      star *= smoothstep(.015, .22, d) * (.5 + .5 * sin(u_t * 9. + h * 40.) * u_high + .3 * fi / 3.);
+      c += tint * star * (1.05 + u_high * 1.2);
+    }
+  }
+
+  c += vec3(1., .74, .5) * exp(-d * 8.5) * (.1 + u_bass * .85);                  // сердце, откуда летят звёзды
+  c += vec3(.42, .6, 1.) * exp(-52. * (d - u_ring) * (d - u_ring)) * u_beat * .5; // волна от удара
+  c *= mix(.72, 1., u_act);
+  c *= 1. - .35 * smoothstep(.5, 1.2, d);
+  c = c * (1. + c * .2) / (1. + c * .42);
+  c += (hash(gl_FragCoord.xy + u_t) - .5) / 255.;
+  gl_FragColor = vec4(c, 1.);
+}`;
+const space = shaderView({ title: "Космос", frag: SPACE, scale: 1, speed: () => .025 + A.act * (.1 + 1.05 * A.energy + A.beat * .35 * calm) });
+
+cgl.addEventListener("webglcontextlost", e => { e.preventDefault(); light.ok = space.ok = false; });
+cgl.addEventListener("webglcontextrestored", () => { stage.gl = null; if (stage.init()) { light.init(); space.init(); } });
+
+/* ───────────── Вид 5: молекулы ───────────── */
+// Цвета атомов по обозначениям из химии (модели CPK), координаты в ангстремах
+const ELEMENTS = {
+  C: { r: .72, bond: "#6f7a8c", stops: ["#c4cedc", "#4a5364", "#10141c"] },
+  H: { r: .42, bond: "#cdd6e2", stops: ["#ffffff", "#ced8e6", "#5a657e"] },
+  O: { r: .66, bond: "#e0453d", stops: ["#ffb0a0", "#e6332d", "#4d0712"] },
+  N: { r: .66, bond: "#4a78f0", stops: ["#bcd2ff", "#2f62ee", "#0b1856"] },
+};
+for (const e of Object.values(ELEMENTS)) {
+  const c = document.createElement("canvas"); c.width = c.height = 128;
+  const x = c.getContext("2d");
+  const g = x.createRadialGradient(46, 42, 3, 64, 64, 63);
+  g.addColorStop(0, e.stops[0]); g.addColorStop(.42, e.stops[1]); g.addColorStop(1, e.stops[2]);
+  x.fillStyle = g; x.beginPath(); x.arc(64, 64, 63, 0, 7); x.fill();
+  e.sprite = c;
+}
+function molecule(list) {
+  const atoms = list.map(([el, x, y, z]) => ({ el, x, y, z: z || 0 }));
+  const bonds = [];
+  atoms.forEach((a, i) => atoms.forEach((b, j) => {
+    if (j > i && Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) < (a.el === "H" || b.el === "H" ? 1.25 : 1.6)) bonds.push([i, j]);
+  }));
+  return { atoms, bonds };
+}
+function aromatic(centers) {   // бензольные кольца: углероды и водороды снаружи
+  const cs = [];
+  for (const cx of centers) for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 6 + i * Math.PI / 3, x = cx + 1.4 * Math.cos(a), y = 1.4 * Math.sin(a);
+    if (!cs.some(c => Math.hypot(c[0] - x, c[1] - y) < .1)) cs.push([x, y]);
+  }
+  const hs = [];
+  for (const c of cs) {
+    const near = cs.filter(o => o !== c && Math.hypot(o[0] - c[0], o[1] - c[1]) < 1.6);
+    if (near.length !== 2) continue;
+    const dx = c[0] - (near[0][0] + near[1][0]) / 2, dy = c[1] - (near[0][1] + near[1][1]) / 2, l = Math.hypot(dx, dy);
+    hs.push(["H", c[0] + dx / l * 1.08, c[1] + dy / l * 1.08]);
+  }
+  return molecule([...cs.map(c => ["C", c[0], c[1]]), ...hs]);
+}
+const tripod = Array.from({ length: 3 }, (_, i) => ["H", .94 * Math.cos(i * 2.094), .94 * Math.sin(i * 2.094), -.38]);
+const SPECIES = {
+  naphthalene: aromatic([-1.21, 1.21]),
+  benzene: aromatic([0]),
+  ethanol: molecule([["C", -1.25, -.2], ["C", 0, .55], ["O", 1.2, -.2], ["H", -1.25, -1.29], ["H", -2.1, .2, .75], ["H", -2.1, .2, -.75], ["H", 0, 1.2, .88], ["H", 0, 1.2, -.88], ["H", 2.1, .25]]),
+  methane: molecule([["C", 0, 0], ["H", .63, .63, .63], ["H", .63, -.63, -.63], ["H", -.63, .63, -.63], ["H", -.63, -.63, .63]]),
+  ammonia: molecule([["N", 0, 0, 0], ...tripod]),
+  dioxide: molecule([["O", -1.16, 0], ["C", 0, 0], ["O", 1.16, 0]]),
+  water: molecule([["O", 0, 0], ["H", .76, .59], ["H", -.76, .59]]),
+};
+const CAST = [["naphthalene", 2, .04], ["benzene", 3, .16], ["ethanol", 3, .32], ["methane", 4, .5], ["ammonia", 3, .62], ["dioxide", 3, .76], ["water", 6, .9]];
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+const molecules = {
+  title: "Молекулы",
+  canvas: c2d,
+  heat: 0, seen: 0, swarm: [], dust: [],
+  build() {
+    for (const [name, count, band] of CAST) for (let i = 0; i < count; i++) {
+      const a = rnd(0, 7), sp = rnd(.25, .6);
+      this.swarm.push({
+        m: SPECIES[name], band: clamp(band + rnd(-.04, .04)),
+        x: rnd(-1.5, 1.5), y: rnd(-.9, .9), z: rnd(-1, 1),
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, vz: rnd(-.25, .25), kx: 0, ky: 0,
+        ax: rnd(0, 7), ay: rnd(0, 7), az: rnd(0, 7), sx: rnd(-1, 1), sy: rnd(-1, 1), sz: rnd(-1, 1), phase: rnd(0, 7),
+      });
+    }
+    for (let i = 0; i < 80; i++) this.dust.push({ x: rnd(-1.7, 1.7), y: rnd(-1, 1), a: rnd(.08, .32), r: rnd(.5, 1.5), p: rnd(0, 7) });
+  },
+  enter() { this.seen = A.beats; },
+  draw(dt, t) {
+    if (!this.swarm.length) this.build();
+    const x = layer.x, S = Math.min(W, H), cx = W / 2, cy = H / 2, ar = W / H;
+    // Температура раствора: от громкости зависит скорость и дрожь
+    const target = A.act * (.05 + A.energy * 1.15);
+    this.heat += (target - this.heat) * follow(dt, target > this.heat ? .08 : .9);
+    const heat = this.heat, pace = .012 + heat * .95;
+
+    const bg = main.createRadialGradient(cx, cy, 0, cx, cy, Math.hypot(W, H) * .58);
+    const lift = (A.bass * .55 + A.beat * .2 * calm) * A.act;
+    bg.addColorStop(0, `rgb(${10 + lift * 22},${48 + lift * 52},${58 + lift * 55})`);
+    bg.addColorStop(.6, "#06202a"); bg.addColorStop(1, "#020b11");
+    main.fillStyle = bg; main.fillRect(0, 0, W, H);
+
+    x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.globalCompositeOperation = "source-over";
+    x.clearRect(0, 0, W, H);
+
+    // Мелкие частицы раствора, как в броуновском движении
+    x.fillStyle = "#9fe6df";
+    for (const d of this.dust) {
+      const j = heat * .018;
+      d.x += rnd(-j, j) + Math.sin(t * .13 + d.p) * dt * .012; d.y += rnd(-j, j) + Math.cos(t * .11 + d.p) * dt * .012;
+      if (Math.abs(d.x) > 1.75) d.x *= -.98; if (Math.abs(d.y) > 1.05) d.y *= -.98;
+      x.globalAlpha = d.a;
+      x.beginPath(); x.arc(cx + d.x * S * .5 * Math.min(ar, 1.75) / 1.75 * 1.75, cy + d.y * S * .5, d.r * dpr, 0, 7); x.fill();
+    }
+
+    if (A.beats !== this.seen) {   // удар расталкивает молекулы от центра
+      this.seen = A.beats;
+      for (const m of this.swarm) {
+        const l = Math.hypot(m.x, m.y) + .2, f = (.04 + A.bass * .3) * calm / (l + .4);
+        m.kx += m.x / l * f; m.ky += m.y / l * f;
+      }
+    }
+
+    const xb = ar * .98, yb = .98;
+    const order = this.swarm.slice().sort((a, b) => b.z - a.z);
+    for (const m of order) {
+      m.x += (m.vx * pace + m.kx) * dt; m.y += (m.vy * pace + m.ky) * dt; m.z += m.vz * pace * dt;
+      m.kx *= Math.exp(-dt * 2.4); m.ky *= Math.exp(-dt * 2.4);
+      m.kx -= m.x * dt * .12; m.ky -= m.y * dt * .12;      // мягко возвращает к центру, чтобы молекулы не жались к краям
+      if (m.x > xb) { m.x = xb; m.vx = -Math.abs(m.vx); m.kx = -Math.abs(m.kx) * .4; }
+      if (m.x < -xb) { m.x = -xb; m.vx = Math.abs(m.vx); m.kx = Math.abs(m.kx) * .4; }
+      if (m.y > yb) { m.y = yb; m.vy = -Math.abs(m.vy); m.ky = -Math.abs(m.ky) * .4; }
+      if (m.y < -yb) { m.y = -yb; m.vy = Math.abs(m.vy); m.ky = Math.abs(m.ky) * .4; }
+      if (Math.abs(m.z) > 1) { m.z = Math.sign(m.z); m.vz *= -1; }
+      m.ax += m.sx * pace * dt * 2.6; m.ay += m.sy * pace * dt * 2.6; m.az += m.sz * pace * dt * 2.6;
+
+      const level = sample(m.band);
+      const p = 1 / (1.3 + m.z * .42);                       // ближе значит крупнее и ярче
+      const unit = S * .035 * p * (1 + level * .2);
+      const ox = cx + m.x * S * .5, oy = cy + m.y * S * .5;
+      const ca = Math.cos(m.ax), sa = Math.sin(m.ax), cb = Math.cos(m.ay), sb = Math.sin(m.ay), cc = Math.cos(m.az), sc = Math.sin(m.az);
+      const pts = m.m.atoms.map((a, i) => {
+        const shake = 1 + level * .13 * Math.sin(t * 34 + m.phase + i * 2.1);   // связи дрожат на своей полосе
+        const x0 = a.x * shake, y0 = a.y * shake, z0 = a.z * shake;
+        const x1 = x0 * cb + z0 * sb, z1 = -x0 * sb + z0 * cb;
+        const y2 = y0 * ca - z1 * sa, z2 = y0 * sa + z1 * ca;
+        return { el: ELEMENTS[a.el], sx: ox + (x1 * cc - y2 * sc) * unit, sy: oy + (x1 * sc + y2 * cc) * unit, d: z2 };
+      });
+      x.globalAlpha = clamp(.25 + (1 - m.z) * .42, .25, 1);
+      const items = [];
+      m.m.bonds.forEach(b => items.push({ d: (pts[b[0]].d + pts[b[1]].d) / 2 - .01, b }));
+      pts.forEach(q => items.push({ d: q.d, q }));
+      items.sort((a, b) => a.d - b.d);
+      x.lineCap = "round"; x.lineWidth = Math.max(1, unit * .17);
+      const rSwell = 1 + level * .4;
+      for (const it of items) {
+        if (it.b) {
+          const a = pts[it.b[0]], b = pts[it.b[1]], mx = (a.sx + b.sx) / 2, my = (a.sy + b.sy) / 2;
+          x.strokeStyle = a.el.bond; x.beginPath(); x.moveTo(a.sx, a.sy); x.lineTo(mx, my); x.stroke();
+          x.strokeStyle = b.el.bond; x.beginPath(); x.moveTo(mx, my); x.lineTo(b.sx, b.sy); x.stroke();
+        } else {
+          const r = it.q.el.r * unit * rSwell;
+          x.drawImage(it.q.el.sprite, it.q.sx - r, it.q.sy - r, r * 2, r * 2);
+        }
+      }
+    }
+    x.globalAlpha = 1;
+    present(.26 + A.energy * .2);
+  },
+};
+
+/* ───────────── Вид 6: краски (симуляция жидкости) ───────────── */
+// Пигменты хранятся как поглощение света: синий и жёлтый вместе дают зелёный, как на настоящей палитре
+const PIGMENTS = [
+  [2.5, .8, .12],    // ультрамарин
+  [.04, .22, 2.6],   // кадмий жёлтый
+  [.08, 2.6, 1.7],   // кармин
+  [2.4, .18, .9],    // изумрудная
+  [.5, 2.5, .25],    // маджента
+  [.03, 1.15, 2.5],  // оранжевый кадмий
+];
+const FL = {
+  vs: `#version 300 es
+in vec2 a; out vec2 v; void main(){ v = a * .5 + .5; gl_Position = vec4(a, 0., 1.); }`,
+  head: `#version 300 es
+precision highp float; precision highp sampler2D; in vec2 v; out vec4 o; uniform vec2 tx;`,
+};
+FL.advect = FL.head + `uniform sampler2D u, s; uniform float dt, keep;
+void main(){ o = texture(s, v - dt * texture(u, v).xy * tx) * keep; }`;
+FL.curl = FL.head + `uniform sampler2D u;
+void main(){ o = vec4(texture(u, v + vec2(tx.x, 0)).y - texture(u, v - vec2(tx.x, 0)).y - texture(u, v + vec2(0, tx.y)).x + texture(u, v - vec2(0, tx.y)).x, 0, 0, 1); }`;
+FL.vort = FL.head + `uniform sampler2D u, c; uniform float amt, dt;
+void main(){
+  float L = texture(c, v - vec2(tx.x, 0)).x, R = texture(c, v + vec2(tx.x, 0)).x, B = texture(c, v - vec2(0, tx.y)).x, T = texture(c, v + vec2(0, tx.y)).x, C = texture(c, v).x;
+  vec2 f = vec2(abs(T) - abs(B), abs(R) - abs(L)) * .5; f /= length(f) + 1e-4; f *= amt * C * vec2(1, -1);
+  o = vec4(texture(u, v).xy + f * dt, 0, 1);
+}`;
+FL.div = FL.head + `uniform sampler2D u;
+void main(){ o = vec4(.5 * (texture(u, v + vec2(tx.x, 0)).x - texture(u, v - vec2(tx.x, 0)).x + texture(u, v + vec2(0, tx.y)).y - texture(u, v - vec2(0, tx.y)).y), 0, 0, 1); }`;
+FL.jacobi = FL.head + `uniform sampler2D p, d;
+void main(){ o = vec4((texture(p, v - vec2(tx.x, 0)).x + texture(p, v + vec2(tx.x, 0)).x + texture(p, v - vec2(0, tx.y)).x + texture(p, v + vec2(0, tx.y)).x - texture(d, v).x) * .25, 0, 0, 1); }`;
+FL.grad = FL.head + `uniform sampler2D p, u;
+void main(){ vec2 w = texture(u, v).xy - .5 * vec2(texture(p, v + vec2(tx.x, 0)).x - texture(p, v - vec2(tx.x, 0)).x, texture(p, v + vec2(0, tx.y)).x - texture(p, v - vec2(0, tx.y)).x); o = vec4(w * min(1., 240. / (length(w) + 1e-4)), 0, 1); }`;
+FL.fade = FL.head + `uniform sampler2D s; uniform float keep; void main(){ o = texture(s, v) * keep; }`;
+FL.splat = FL.head + `uniform sampler2D s; uniform vec2 at; uniform vec4 add; uniform float rad, burst, aspect;
+void main(){
+  vec2 d = v - at; d.x *= aspect;
+  float g = exp(-dot(d, d) / rad);
+  vec4 x = add * g;
+  if (burst > 0.) x.xy = d / (length(d) + 1e-3) * burst * g;
+  o = texture(s, v) + x;
+}`;
+FL.show = FL.head + `uniform sampler2D s;
+float lump(vec2 c){ vec3 a = max(texture(s, c).rgb, 0.); return a.r + a.g + a.b; }
+void main(){
+  vec3 a = max(texture(s, v).rgb, 0.);
+  float m = max(a.r, max(a.g, a.b));
+  a /= 1. + .28 * m;                                   // густой слой темнеет, но не уходит в чёрный
+  vec3 c = vec3(.945, .905, .83) * exp(-a);
+  c = max(mix(vec3(dot(c, vec3(.3, .55, .15))), c, 1.4), 0.);  // пигмент ярче, смеси не уходят в серое
+  vec2 g = vec2(lump(v + vec2(tx.x, 0)) - lump(v - vec2(tx.x, 0)), lump(v + vec2(0, tx.y)) - lump(v - vec2(0, tx.y)));
+  vec3 n = normalize(vec3(-g * .55, 1.)), l = normalize(vec3(-.5, .6, .72));
+  c *= .84 + .23 * max(dot(n, l), 0.);                  // объём мазка и блик мокрой краски
+  c += vec3(.5) * pow(max(reflect(-l, n).z, 0.), 42.) * smoothstep(.1, 1.4, m);
+  o = vec4(c, 1.);
+}`;
+
+const paint = {
+  title: "Краски",
+  canvas: $("cfl"),
+  ok: false, gl: null, P: {}, vel: null, dye: null, prs: null, dvg: null, crl: null,
+  simW: 0, simH: 150, dyeW: 0, dyeH: 620, seen: 0, turn: 0, phase: 0, slow: 0, slowFor: 0, seeded: false,
+
+  init() {
+    const gl = this.gl = this.canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
+    if (!gl || !(gl.getExtension("EXT_color_buffer_float") || gl.getExtension("EXT_color_buffer_half_float"))) return;
+    gl.getExtension("OES_texture_float_linear");
+    const compile = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+    const vs = compile(gl.VERTEX_SHADER, FL.vs);
+    for (const name of ["advect", "curl", "vort", "div", "jacobi", "grad", "fade", "splat", "show"]) {
+      const fs = compile(gl.FRAGMENT_SHADER, FL[name]), pr = gl.createProgram();
+      gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.bindAttribLocation(pr, 0, "a"); gl.linkProgram(pr);
+      if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { console.error(name, gl.getShaderInfoLog(fs)); return; }
+      const u = {}, n = gl.getProgramParameter(pr, gl.ACTIVE_UNIFORMS);
+      for (let i = 0; i < n; i++) { const un = gl.getActiveUniform(pr, i).name; u[un] = gl.getUniformLocation(pr, un); }
+      this.P[name] = { pr, u };
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.disable(gl.BLEND);
+    this.vel = this.dye = null; this.seeded = false;
+    this.allocate();
+    this.ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  },
+
+  target(w, h, ifmt, fmt) {
+    const gl = this.gl, tex = gl.createTexture(), fb = gl.createFramebuffer();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    for (const [k, val] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, val);
+    gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, gl.HALF_FLOAT, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.viewport(0, 0, w, h); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    return { tex, fb, w, h };
+  },
+  pair(w, h, ifmt, fmt, old) {   // при смене размера содержимое переносится, краска не пропадает
+    const p = { r: this.target(w, h, ifmt, fmt), w: this.target(w, h, ifmt, fmt), swap() { const t = this.r; this.r = this.w; this.w = t; } };
+    if (old) {
+      this.use("fade", { keep: 1 }, { s: old.r.tex });
+      this.blit(p.r);
+      this.gl.deleteTexture(old.r.tex); this.gl.deleteTexture(old.w.tex);
+      this.gl.deleteFramebuffer(old.r.fb); this.gl.deleteFramebuffer(old.w.fb);
+    }
+    return p;
+  },
+  allocate() {
+    const gl = this.gl, ar = Math.max(innerWidth / Math.max(innerHeight, 1), .2);
+    this.aspect = ar;
+    this.simW = Math.round(this.simH * ar); this.dyeW = Math.round(this.dyeH * ar);
+    this.tx = [1 / this.simW, 1 / this.simH];
+    this.vel = this.pair(this.simW, this.simH, gl.RG16F, gl.RG, this.vel);
+    this.dye = this.pair(this.dyeW, this.dyeH, gl.RGBA16F, gl.RGBA, this.dye);
+    this.prs = this.pair(this.simW, this.simH, gl.R16F, gl.RED, this.prs);
+    for (const k of ["dvg", "crl"]) { if (this[k]) { gl.deleteTexture(this[k].tex); gl.deleteFramebuffer(this[k].fb); } this[k] = this.target(this.simW, this.simH, gl.R16F, gl.RED); }
+  },
+  use(name, nums, texs) {
+    const gl = this.gl, P = this.P[name];
+    gl.useProgram(P.pr);
+    if (P.u.tx) gl.uniform2fv(P.u.tx, this.tx);
+    for (const k in nums) if (P.u[k]) Array.isArray(nums[k]) ? gl[nums[k].length === 4 ? "uniform4fv" : "uniform2fv"](P.u[k], nums[k]) : gl.uniform1f(P.u[k], nums[k]);
+    let unit = 0;
+    for (const k in texs) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, texs[k]); gl.uniform1i(P.u[k], unit); unit++; }
+  },
+  blit(t) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t ? t.fb : null);
+    t ? gl.viewport(0, 0, t.w, t.h) : gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+  splat(field, at, add, rad, burst = 0) {
+    this.use("splat", { at, add, rad, burst, aspect: this.aspect }, { s: field.r.tex });
+    this.blit(field.w); field.swap();
+  },
+  pour(at, pigment, amount, rad, burst, force) {
+    if (burst) this.splat(this.vel, at, [0, 0, 0, 0], rad * 1.4, burst);
+    if (force) this.splat(this.vel, at, [force[0], force[1], 0, 0], rad);
+    this.splat(this.dye, at, [pigment[0] * amount, pigment[1] * amount, pigment[2] * amount, 0], rad);
+  },
+  seed() {
+    this.seeded = true;
+    for (let i = 0; i < 9; i++) this.pour([rnd(.08, .92), rnd(.1, .9)], PIGMENTS[i % PIGMENTS.length], rnd(.6, 1.1), rnd(.012, .03));
+  },
+  inject(h, t) {
+    if (A.beats !== this.seen) {          // на ударе вливается новый цвет и расталкивает старые
+      this.seen = A.beats; this.turn++;
+      const at = [rnd(.14, .86), rnd(.16, .84)], bass = A.bass * A.act;
+      if (this.turn % 5 === 0) this.pour(at, [-2, -2, -2], 1, .016, 60 + bass * 90);   // белила освежают холст
+      else this.pour(at, PIGMENTS[this.turn % PIGMENTS.length], .55 + bass * .85, rnd(.003, .007) * (1 + bass), (60 + bass * 130) * calm);
+    }
+    // Три кисти: на басах, середине и верхах
+    this.phase += h * (.1 + A.energy * .9);
+    const brushes = [[A.bass, .0016, 1.0, 0], [A.mid, .0011, 1.37, 2.1], [A.high, .0007, 1.83, 4.2]];
+    brushes.forEach(([lv, rad, wob, off], i) => {
+      const level = lv * A.act;
+      if (level < .1) return;
+      const a = this.phase * wob + off;
+      const at = [.5 + .38 * Math.sin(a), .5 + .36 * Math.sin(a * 1.31 + off)];
+      const push = 900 * level * h;   // сила на секунду, а не на кадр: иначе жидкость разгоняется без предела
+      const force = [Math.cos(a) * push, Math.cos(a * 1.31 + off) * push];
+      this.pour(at, PIGMENTS[((this.turn >> 2) + i * 2) % PIGMENTS.length], level * h * 2, rad, 0, force);
+    });
+    // В тишине поверхность едва шевелится
+    if (A.act < .5) this.splat(this.vel, [.5 + .3 * Math.sin(t * .17), .5 + .3 * Math.cos(t * .13)], [Math.cos(t * .3) * 3, Math.sin(t * .23) * 3, 0, 0], .05);
+  },
+  enter() { this.seen = A.beats; this.slow = 0; this.slowFor = 0; },
+  draw(dt, t) {
+    if (!this.ok) return;
+    const gl = this.gl, c = this.canvas;
+    const cw = Math.round(innerWidth * Math.min(dpr, 1.5)), ch = Math.round(innerHeight * Math.min(dpr, 1.5));
+    if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch; }
+    // Смена пропорций (например, вход в полный экран) и нехватка мощности
+    this.slow += (dt * 1000 - this.slow) * follow(dt, .5);
+    this.slowFor = this.slow > 28 ? this.slowFor + dt : 0;
+    const tooSlow = this.slowFor > 1 && this.dyeH > 300;
+    if (tooSlow) { this.dyeH = Math.round(this.dyeH * .75); this.simH = Math.max(96, Math.round(this.simH * .85)); this.slowFor = 0; }
+    if (tooSlow || Math.abs(innerWidth / Math.max(innerHeight, 1) - this.aspect) > .01) this.allocate();
+    if (!this.seeded) this.seed();
+
+    const h = clamp(dt, .008, .025);
+    this.inject(h, t);
+
+    this.use("curl", {}, { u: this.vel.r.tex }); this.blit(this.crl);
+    this.use("vort", { amt: 12, dt: h }, { u: this.vel.r.tex, c: this.crl.tex }); this.blit(this.vel.w); this.vel.swap();
+    this.use("div", {}, { u: this.vel.r.tex }); this.blit(this.dvg);
+    this.use("fade", { keep: .8 }, { s: this.prs.r.tex }); this.blit(this.prs.w); this.prs.swap();
+    for (let i = 0; i < 18; i++) { this.use("jacobi", {}, { p: this.prs.r.tex, d: this.dvg.tex }); this.blit(this.prs.w); this.prs.swap(); }
+    this.use("grad", {}, { p: this.prs.r.tex, u: this.vel.r.tex }); this.blit(this.vel.w); this.vel.swap();
+    this.use("advect", { dt: h, keep: Math.exp(-h * .55) }, { u: this.vel.r.tex, s: this.vel.r.tex }); this.blit(this.vel.w); this.vel.swap();
+    // Краска бледнеет только пока играет музыка, поэтому в тишине картина остаётся на холсте
+    this.use("advect", { dt: h, keep: Math.exp(-h * A.act / 7) }, { u: this.vel.r.tex, s: this.dye.r.tex }); this.blit(this.dye.w); this.dye.swap();
+
+    const save = this.tx; this.tx = [1 / this.dyeW, 1 / this.dyeH];
+    this.use("show", {}, { s: this.dye.r.tex }); this.blit(null);
+    this.tx = save;
+  },
+};
+paint.canvas.addEventListener("webglcontextlost", e => { e.preventDefault(); paint.ok = false; });
+paint.canvas.addEventListener("webglcontextrestored", () => paint.init());
 
 /* ───────────── Смена видов ───────────── */
-light.init();
-const views = light.ok ? [bars, ring, light] : [bars, ring];
+if (stage.init()) { light.init(); space.init(); }
+paint.init();
+const views = [bars, ring, light, space, molecules, paint].filter(v => v.ok !== false);
 const remember = {
   get() { try { return parseInt(localStorage.getItem("eq-view"), 10) || 0; } catch { return 0; } },
   set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },
@@ -474,8 +921,7 @@ function show(i, announce) {
   cur = (i + views.length) % views.length;
   remember.set(cur);
   const v = views[cur];
-  c2d.hidden = v.canvas !== c2d;
-  cgl.hidden = v.canvas !== cgl;
+  for (const c of [c2d, cgl, paint.canvas]) c.hidden = v.canvas !== c;
   v.enter();
   if (announce) {
     $("veil").animate([{ opacity: 1 }, { opacity: 0 }], { duration: calm < 1 ? 1 : 320, easing: "ease-out" });

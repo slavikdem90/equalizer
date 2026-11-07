@@ -674,7 +674,7 @@ const space = shaderView({
 
 /* ───────────── Вид 7: огонь ───────────── */
 const FIRE = `precision highp float;
-uniform vec2 u_res; uniform float u_t, u_beat, u_high, u_act, u_variant; uniform sampler2D u_spec;
+uniform vec2 u_res; uniform float u_t, u_beat, u_high, u_act, u_variant, u_boost; uniform sampler2D u_spec;
 const mat2 ROT = mat2(.8, .6, -.6, .8);
 float hash(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.23); return fract(p.x * p.y); }
 float noise(vec2 p){
@@ -699,7 +699,8 @@ void main(){
   float w2 = fbm(p * vec2(2.9, 1.6) + vec2(5.2, -u_t * 1.95) + w1 * 1.5);
   float x = clamp(abs(uv.x - .5) * 2. + ((w1 - .5) * .46 + (w2 - .5) * .3) * y, 0., 1.);
   float s = band(x * .9 + .03);
-  float h = .1 + u_act * (.1 + .86 * s + .16 * u_beat);        // высота пламени над этой точкой
+  float h = .1 + u_act * (.1 + .86 * s + (.16 + .22 * u_boost) * u_beat)
+          + u_boost * (.24 + .07 * sin(u_t * 7.));                // при сильном звуке пламя выше и пульсирует
   float f = 1. - y / h;
   f += (w2 - .5) * (1.15 + y * 1.1);
   float tongue = 1. - abs(2. * w2 - 1.);                       // языки с тёмными разрывами внутри
@@ -732,9 +733,15 @@ void main(){
 }`;
 let specTex = null;
 const specBytes = new Uint8Array(BANDS);
+const blaze = { boost: 0 };
 const fire = shaderView({
   title: "Огонь", frag: FIRE, scale: .75,
-  speed: () => .07 + A.act * (.26 + .85 * A.energy),
+  prepare(dt) {
+    const loud = clamp((A.energy - .38) / .3) * A.act;
+    blaze.boost += (loud - blaze.boost) * follow(dt, loud > blaze.boost ? .2 : 1.1);
+  },
+  speed: () => .07 + A.act * (.26 + .85 * A.energy) + blaze.boost * blaze.boost * 1.5 * calm,
+  extra: () => ({ boost: blaze.boost }),
   before(gl) {
     if (!specTex) {
       specTex = gl.createTexture();
@@ -1236,6 +1243,13 @@ const paint = {
         }
       }
     }
+    // Пока звук сильный, на холст падают мелкие капли: чем громче, тем чаще
+    const loud = clamp((A.energy - .38) / .3) * A.act;
+    this.dropAcc = (this.dropAcc || 0) + this.realDt * loud * 7;   // по реальному времени, а не по шагу симуляции
+    while (this.dropAcc >= 1) {
+      this.dropAcc--; this.drops = (this.drops || 0) + 1;
+      this.pour([rnd(.04, .96), rnd(.06, .94)], PIGMENTS[Math.floor(Math.random() * PIGMENTS.length)], 1.3, rnd(.0003, .0011), 8 * calm);
+    }
     // Три кисти: на басах, середине и верхах
     this.phase += h * (.1 + A.energy * .9);
     const brushes = [[A.bass, .0016, 1.0, 0], [A.mid, .0011, 1.37, 2.1], [A.high, .0007, 1.83, 4.2]];
@@ -1266,6 +1280,7 @@ const paint = {
     if (!this.seeded) this.seed();
 
     const h = clamp(dt, .008, .025);
+    this.realDt = dt;
     // Сила звука задаёт скорость течения: громко значит бурно, в тишине краска быстро замирает
     const drive = clamp(A.act * A.energy * 1.8), flow = .15 + drive * 1.6;
     this.inject(h, t);

@@ -553,7 +553,7 @@ const LIGHT_PALETTES = [
   [[.00, .28, .24], [.14, .78, .42], [.96, .90, .30]],   // лес
   [[.10, .08, .52], [.68, .16, .92], [1, .50, .68]],     // орхидея
 ];
-function shaderView({ title, frag, scale, speed, palettes, paletteSpeed, before }) {
+function shaderView({ title, frag, scale, speed, palettes, paletteSpeed, before, prepare, extra }) {
   return {
     title, canvas: cgl, ok: false, scale, flow: 40, hue: 0, ring: 0, seen: 0, slow: 0, slowFor: 0, pr: null, u: null,
     init() {
@@ -575,6 +575,7 @@ function shaderView({ title, frag, scale, speed, palettes, paletteSpeed, before 
       if (cgl.width !== cw || cgl.height !== ch) { cgl.width = cw; cgl.height = ch; }
       gl.viewport(0, 0, cw, ch);
       gl.useProgram(this.pr);
+      if (prepare) prepare(dt);
 
       const v = speed();
       this.flow += dt * v;
@@ -585,8 +586,9 @@ function shaderView({ title, frag, scale, speed, palettes, paletteSpeed, before 
       gl.uniform1f(u.t, this.flow);
       gl.uniform1f(u.bass, A.bass * A.act); gl.uniform1f(u.mid, A.mid * A.act); gl.uniform1f(u.high, A.high * A.act);
       gl.uniform1f(u.beat, A.beat * A.act * calm); gl.uniform1f(u.ring, this.ring); gl.uniform1f(u.act, A.act);
-      gl.uniform1f(u.streak, clamp(v * 1.5));
+      gl.uniform1f(u.streak, Math.min(v * 1.5, 2.6));
       if (before) before(gl);
+      if (extra) for (const [name, value] of Object.entries(extra())) gl.uniform1f(this.u[name] || (this.u[name] = gl.getUniformLocation(this.pr, "u_" + name)), value);
       gl.uniform1f(u.variant, this.variant || 0);
       if (palettes) {   // палитры плавно перетекают одна в другую
         this.hue = (this.hue + dt * paletteSpeed()) % palettes.length;
@@ -603,7 +605,7 @@ const light = shaderView({ title: "Свет", frag: FRAG, scale: .7, speed: () =
 
 /* ───────────── Вид 4: космос ───────────── */
 const SPACE = `precision highp float;
-uniform vec2 u_res; uniform float u_t, u_bass, u_mid, u_high, u_beat, u_ring, u_act, u_streak;
+uniform vec2 u_res; uniform float u_t, u_bass, u_mid, u_high, u_beat, u_ring, u_act, u_streak, u_flash;
 const mat2 ROT = mat2(.8, .6, -.6, .8);
 float hash(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.23); return fract(p.x * p.y); }
 float noise(vec2 p){
@@ -648,11 +650,27 @@ void main(){
     }
   }
   c += vec3(.42, .6, 1.) * exp(-52. * (d - u_ring) * (d - u_ring)) * u_beat * .12;  // еле заметная волна от удара
+  c += vec3(.9, .94, 1.) * u_flash * (.05 + .03 * (1. - d));                          // белая вспышка на прыжке, едва заметная
   c = c * (1. + c * .2) / (1. + c * .42);
   c += (hash(gl_FragCoord.xy + u_t) - .5) / 255.;
   gl_FragColor = vec4(c, 1.);
 }`;
-const space = shaderView({ title: "Космос", frag: SPACE, scale: 1, speed: () => .025 + A.act * (.1 + 1.05 * A.energy + A.beat * .35 * calm) });
+// Прыжок: на громких местах полёт резко ускоряется, на мощном ударе еле заметная белая вспышка
+const jump = { boost: 0, flash: 0, seen: 0 };
+const space = shaderView({
+  title: "Космос", frag: SPACE, scale: 1,
+  prepare(dt) {
+    const loud = clamp((A.energy - .4) / .3) * A.act;
+    jump.boost += (loud - jump.boost) * follow(dt, loud > jump.boost ? .25 : 1.4);
+    if (A.beats !== jump.seen) {
+      jump.seen = A.beats;
+      if (A.bass > .55 && jump.boost > .35) jump.flash = Math.max(jump.flash, .6 + A.bass * .4);
+    }
+    jump.flash *= Math.exp(-dt / .22);
+  },
+  speed: () => .025 + A.act * (.1 + 1.05 * A.energy + A.beat * .35 * calm) + jump.boost * jump.boost * 2.4 * calm,
+  extra: () => ({ flash: jump.flash * calm }),
+});
 
 /* ───────────── Вид 7: огонь ───────────── */
 const FIRE = `precision highp float;

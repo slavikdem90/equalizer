@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0612">
+<title>Эквалайзер</title>
+<meta name="description" content="Полноэкранный эквалайзер для музыки. Слушает микрофон, звук не покидает браузер.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0612'/%3E%3Cpath fill='%23ff2f5e' d='M6 18h4v8H6z'/%3E%3Cpath fill='%23ffb02e' d='M14 7h4v19h-4z'/%3E%3Cpath fill='%234cc9ff' d='M22 13h4v13h-4z'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500&family=Unbounded:wght@500&display=swap">
+<style>
+  /* Экран целиком отдан картинке; интерфейс появляется только на старте и на мгновение при смене вида. */
+  :root {
+    color-scheme: dark;
+    --ground: #0a0612;
+    --ink: #f7f1ea;
+    --ink-soft: #b9afc2;
+    --ember: #ff7a2e;
+    --display: "Unbounded", "Arial Black", system-ui, sans-serif;
+    --body: "Golos Text", -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--ground); color: var(--ink); overflow: hidden; font: 16px/1.5 var(--body); }
+  [hidden] { display: none !important; }
+  body.no-cursor, body.no-cursor * { cursor: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #veil { position: fixed; inset: 0; background: var(--ground); opacity: 0; pointer-events: none; }
+
+  #gate {
+    position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: flex-start; gap: 24px;
+    padding-block: max(40px, 9vh) 40px;
+    padding-left: max(24px, 7vw, env(safe-area-inset-left, 0px));
+    padding-right: max(24px, env(safe-area-inset-right, 0px));
+    background: linear-gradient(100deg, rgba(10, 6, 18, .9), rgba(10, 6, 18, .72) 42%, rgba(10, 6, 18, 0) 74%);
+  }
+  h1 { margin: 0; font: 500 clamp(32px, 6.4vw, 92px)/1.05 var(--display); letter-spacing: -.03em; }
+  #lede { margin: 0; max-width: 34em; font-size: clamp(16px, 1.5vw, 20px); color: var(--ink-soft); }
+  #lede strong { color: var(--ink); font-weight: 500; }
+  #start {
+    align-self: flex-start; padding: 16px 28px; border: 0; border-radius: 999px;
+    background: var(--ink); color: var(--ground); font: 500 18px/1.2 var(--body); cursor: pointer;
+    transition: transform .16s cubic-bezier(.2, .8, .2, 1), background-color .16s;
+  }
+  #start:hover { background: #fff; }
+  #start:active { transform: scale(.97); }
+  #start:disabled { opacity: .6; cursor: progress; }
+  #start:focus-visible { outline: 3px solid var(--ember); outline-offset: 3px; }
+
+  .hud {
+    position: fixed; left: max(24px, env(safe-area-inset-left, 0px)); bottom: max(20px, env(safe-area-inset-bottom, 0px));
+    max-width: calc(100vw - 48px); padding: 8px 14px; border-radius: 10px; background: rgba(10, 6, 18, .62);
+    color: var(--ink); font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .5s;
+  }
+  .hud.on { opacity: 1; transition-duration: .12s; }
+  #name { bottom: auto; top: max(20px, env(safe-area-inset-top, 0px)); font: 500 15px/1.4 var(--display); }
+  kbd { font: inherit; color: #ffc48f; }
+
+  @media (prefers-reduced-motion: reduce) { .hud, #start { transition: none; } }
+</style>
+</head>
+<body>
+<canvas id="c2d" aria-hidden="true"></canvas>
+<canvas id="cgl" aria-hidden="true" hidden></canvas>
+<div id="veil"></div>
+
+<section id="gate">
+  <h1 id="head">Эквалайзер</h1>
+  <p id="lede">Включите музыку рядом с ноутбуком и разрешите доступ к микрофону. Звук никуда не отправляется и не записывается: всё считается прямо в браузере.</p>
+  <button id="start" type="button" autofocus>Включить микрофон</button>
+</section>
+
+<div id="name" class="hud" role="status"></div>
+<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> выбор · <kbd>F</kbd> весь экран</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const clamp = (x, a = 0, b = 1) => x < a ? a : x > b ? b : x;
+const follow = (dt, tau) => 1 - Math.exp(-dt / tau);          // сглаживание, не зависящее от частоты кадров
+const calm = matchMedia("(prefers-reduced-motion: reduce)").matches ? .35 : 1; // меньше вспышек по запросу системы
+
+/* ───────────── Звук ───────────── */
+const BANDS = 96, FMIN = 50, FMAX = 16000;
+const A = { v: new Float32Array(BANDS), act: 0, bass: 0, mid: 0, high: 0, energy: 0, beat: 0, beats: 0, sinceBeat: 9 };
+let mic = null;
+
+function openAnalyser(ctx, stream) {
+  const an = ctx.createAnalyser();
+  an.fftSize = 4096;
+  an.smoothingTimeConstant = 0;   // сглаживаем сами, с разной скоростью подъёма и спада
+  const src = ctx.createMediaStreamSource(stream);
+  src.connect(an);                // в колонки не выводим, иначе будет завывание
+  const hzPerBin = ctx.sampleRate / an.fftSize, top = Math.min(FMAX, ctx.sampleRate * .45);
+  const edges = Array.from({ length: BANDS + 1 }, (_, i) => FMIN * Math.pow(top / FMIN, i / BANDS) / hzPerBin);
+  const hz = i => FMIN * Math.pow(top / FMIN, (i + .5) / BANDS);
+  const group = (lo, hi) => { const g = []; for (let i = 0; i < BANDS; i++) if (hz(i) >= lo && hz(i) <= hi) g.push(i); return g; };
+  return {
+    ctx, src, an, stream, edges,
+    fd: new Float32Array(an.frequencyBinCount), td: new Float32Array(an.fftSize),
+    db: new Float32Array(BANDS), bandRef: new Float32Array(BANDS).fill(-45), ref: -45,
+    rms: -80, buckets: [], bucketMin: 0, bucketAge: 0, bass: 0,
+    gBass: group(50, 160), gMid: group(300, 2500), gHigh: group(4000, 1e6),
+  };
+}
+
+function readMic(m, dt) {
+  m.an.getFloatFrequencyData(m.fd);
+  m.an.getFloatTimeDomainData(m.td);
+
+  // Громкость и подвижный порог шума. Минимум за 30 секунд считаем тишиной комнаты.
+  let sum = 0;
+  for (let i = 0; i < m.td.length; i++) sum += m.td[i] * m.td[i];
+  const inst = 10 * Math.log10(sum / m.td.length + 1e-12);
+  // Совсем нулевой сигнал (первые мгновения, выключенный микрофон) в порог не идёт, иначе он сбил бы его на полминуты
+  const hasSignal = inst > -100;
+  if (hasSignal) {
+    if (m.bucketAge === 0) { m.rms = inst; m.bucketMin = inst; }
+    m.rms += (inst - m.rms) * follow(dt, .1);
+    m.bucketMin = Math.min(m.bucketMin, m.rms);
+    m.bucketAge += dt;
+    if (m.bucketAge >= 1) {
+      m.buckets.push(m.bucketMin);
+      if (m.buckets.length > 30) m.buckets.shift();
+      m.bucketMin = m.rms; m.bucketAge = .001;
+    }
+  }
+  const floor = Math.min(-50, m.bucketMin, ...m.buckets);   // громче -50 dB шум комнаты считать не будем
+  const act = hasSignal ? clamp((m.rms - floor - 4) / 6) : 0;
+  A.act += (act - A.act) * follow(dt, act > A.act ? .1 : 1.2);
+
+  // Спектр по логарифмическим полосам
+  let peak = -160;
+  for (let b = 0; b < BANDS; b++) {
+    const lo = m.edges[b], hi = m.edges[b + 1];
+    let db;
+    if (hi - lo < 1.5) {
+      const c = (lo + hi) / 2, i = Math.floor(c), f = c - i;
+      // В полной тишине браузер отдаёт -Infinity, поэтому значения ограничены снизу
+      db = Math.max(m.fd[i], -160) * (1 - f) + Math.max(m.fd[i + 1], -160) * f;
+    } else {
+      let p = 0, n = 0;
+      for (let i = Math.ceil(lo); i <= hi && i < m.fd.length; i++) { p += Math.pow(10, Math.max(m.fd[i], -160) / 10); n++; }
+      db = 10 * Math.log10(p / Math.max(n, 1) + 1e-16);
+    }
+    m.db[b] = db;
+    if (db > peak) peak = db;
+  }
+
+  // Автоподстройка: общая под громкость и своя для каждой полосы.
+  // Микрофон ноутбука слабо слышит бас, поэтому полосы выравниваем относительно их же максимума.
+  m.ref += (peak - m.ref) * follow(dt, peak > m.ref ? .05 : 8);
+  const RANGE = 36;
+  for (let b = 0; b < BANDS; b++) {
+    const db = m.db[b];
+    m.bandRef[b] += (db - m.bandRef[b]) * follow(dt, db > m.bandRef[b] ? .05 : 6);
+    const own = Math.max(m.bandRef[b], m.ref - 48);   // верха в музыке слабее баса на десятки dB
+    const top = m.ref + (own - m.ref) * .85;
+    const n = clamp((db - (top - RANGE)) / RANGE);
+    const target = Math.pow(n, 1.6) * .97 * A.act;
+    A.v[b] += (target - A.v[b]) * follow(dt, target > A.v[b] ? .02 : .16);
+  }
+
+  mixDown(m.gBass, m.gMid, m.gHigh, dt);
+  const b = A.bass;
+  m.bass += (b - m.bass) * follow(dt, .8);
+  if (b > m.bass + .1 && b > .22 && A.sinceBeat > .18) fireBeat();
+}
+
+const mean = g => { let s = 0; for (let i = 0; i < g.length; i++) s += A.v[g[i]]; return g.length ? s / g.length : 0; };
+function mixDown(gB, gM, gH, dt) {
+  const env = (cur, x) => cur + (x - cur) * follow(dt, x > cur ? .03 : .22);
+  A.bass = env(A.bass, mean(gB)); A.mid = env(A.mid, mean(gM)); A.high = env(A.high, mean(gH));
+  let s = 0; for (let i = 0; i < BANDS; i++) s += A.v[i];
+  A.energy = env(A.energy, s / BANDS);
+}
+function fireBeat() { A.beat = 1; A.beats++; A.sinceBeat = 0; }
+
+// Заставка до включения микрофона: показывает, что будет на экране.
+const dB = Array.from({ length: BANDS }, (_, i) => i).filter(i => i < 16);
+const dM = Array.from({ length: BANDS }, (_, i) => i).filter(i => i >= 30 && i < 64);
+const dH = Array.from({ length: BANDS }, (_, i) => i).filter(i => i >= 72);
+let demoBeat = 0;
+function readDemo(dt, t) {
+  A.act += (1 - A.act) * follow(dt, .3);
+  demoBeat += dt;
+  if (demoBeat > .56) { demoBeat = 0; fireBeat(); }
+  const kick = Math.exp(-demoBeat * 7);
+  for (let i = 0; i < BANDS; i++) {
+    const x = i / BANDS;
+    const body = .34 + .2 * Math.sin(x * 11 + t * 1.15) + .14 * Math.sin(x * 29 - t * 2.1) + .08 * Math.sin(x * 61 + t * 3.7);
+    const target = clamp(body * (1 - x * .45) + kick * .62 * Math.exp(-x * 9));
+    A.v[i] += (target - A.v[i]) * follow(dt, .07);
+  }
+  mixDown(dB, dM, dH, dt);
+}
+
+const sample = x => {     // значение спектра в точке 0..1
+  const p = clamp(x) * (BANDS - 1), i = Math.floor(p), f = p - i;
+  return A.v[i] * (1 - f) + (A.v[Math.min(i + 1, BANDS - 1)]) * f;
+};
+
+/* ───────────── Холсты ───────────── */
+const c2d = $("c2d"), cgl = $("cgl"), main = c2d.getContext("2d", { alpha: false });
+const mk = () => { const c = document.createElement("canvas"); return { c, x: c.getContext("2d") }; };
+const layer = mk(), glowA = mk(), glowB = mk();
+let W = 0, H = 0, dpr = 1;
+
+function resize() {
+  const cw = innerWidth, ch = innerHeight;
+  dpr = Math.min(devicePixelRatio || 1, 2, Math.sqrt(5e6 / Math.max(cw * ch, 1)));
+  W = Math.max(1, Math.round(cw * dpr)); H = Math.max(1, Math.round(ch * dpr));
+  c2d.width = layer.c.width = W; c2d.height = layer.c.height = H;
+  glowA.c.width = Math.ceil(W / 6); glowA.c.height = Math.ceil(H / 6);
+  glowB.c.width = Math.ceil(W / 20); glowB.c.height = Math.ceil(H / 20);
+  bars.grad = null;
+}
+
+// Свечение: тот же кадр, уменьшенный и растянутый поверх в режиме сложения.
+function present(strength) {
+  main.globalCompositeOperation = "source-over"; main.globalAlpha = 1;
+  main.drawImage(layer.c, 0, 0);
+  for (const g of [glowA, glowB]) { g.x.imageSmoothingEnabled = true; g.x.imageSmoothingQuality = "high"; }
+  glowA.x.clearRect(0, 0, glowA.c.width, glowA.c.height);
+  glowA.x.drawImage(layer.c, 0, 0, glowA.c.width, glowA.c.height);
+  glowB.x.clearRect(0, 0, glowB.c.width, glowB.c.height);
+  glowB.x.drawImage(glowA.c, 0, 0, glowB.c.width, glowB.c.height);
+  main.globalCompositeOperation = "lighter";
+  main.imageSmoothingEnabled = true; main.imageSmoothingQuality = "high";
+  main.globalAlpha = .55 * strength; main.drawImage(glowA.c, 0, 0, W, H);
+  main.globalAlpha = .8 * strength; main.drawImage(glowB.c, 0, 0, W, H);
+  main.globalAlpha = 1; main.globalCompositeOperation = "source-over";
+}
+
+/* ───────────── Вид 1: столбцы ───────────── */
+const bars = {
+  title: "Столбцы",
+  canvas: c2d,
+  grad: null, peaks: new Float32Array(BANDS), hold: new Float32Array(BANDS), fall: new Float32Array(BANDS),
+  enter() { this.peaks.fill(0); },
+  draw(dt, t) {
+    const n = clamp(Math.round(innerWidth / 15), 28, BANDS);
+    const margin = W * .035, step = (W - margin * 2) / n, bw = step * .7;
+    const hz = H * .75, maxH = H * .67, x = layer.x;
+
+    const bg = main.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, "#0a0612"); bg.addColorStop(.75, "#160a22"); bg.addColorStop(1, "#080510");
+    main.fillStyle = bg; main.fillRect(0, 0, W, H);
+    const pulse = (.05 + A.bass * .3 + A.beat * .12 * calm) * A.act;   // пол подсвечивается от баса
+    const glow = main.createRadialGradient(W / 2, hz, 0, W / 2, hz, W * .62);
+    glow.addColorStop(0, `rgba(255,70,90,${pulse})`); glow.addColorStop(.5, `rgba(150,40,130,${pulse * .4})`); glow.addColorStop(1, "rgba(60,20,90,0)");
+    main.fillStyle = glow; main.fillRect(0, 0, W, H);
+
+    if (!this.grad) {
+      this.grad = x.createLinearGradient(margin, 0, W - margin, 0);
+      [[0, "#ff2f5e"], [.26, "#ff7a2e"], [.5, "#ffd23f"], [.74, "#6ef0c8"], [1, "#4cc9ff"]].forEach(s => this.grad.addColorStop(s[0], s[1]));
+    }
+    const path = new Path2D(), caps = new Path2D(), capH = Math.max(2, 3 * dpr), lift = 3 * dpr;
+    for (let i = 0; i < n; i++) {
+      const u = (i + .5) / n;
+      const rest = (1 - A.act) * (.012 + .012 * Math.sin(u * 9 + t * .6));   // в тишине остаётся лёгкая волна
+      const v = clamp(sample(u) + rest);
+      const px = margin + i * step + (step - bw) / 2, h = Math.max(capH, v * maxH);
+      path.rect(px, -h, bw, h);
+      // Пик держится мгновение и падает с ускорением
+      if (v >= this.peaks[i]) { this.peaks[i] = v; this.hold[i] = .28; this.fall[i] = 0; }
+      else if ((this.hold[i] -= dt) <= 0) { this.fall[i] += dt * 4; this.peaks[i] = Math.max(0, this.peaks[i] - this.fall[i] * dt); }
+      if (this.peaks[i] > .03) caps.rect(px, -this.peaks[i] * maxH - lift - capH, bw, capH);
+    }
+
+    x.setTransform(1, 0, 0, 1, 0, 0);
+    x.globalCompositeOperation = "source-over"; x.globalAlpha = 1;
+    x.clearRect(0, 0, W, H);
+    x.fillStyle = this.grad;
+    x.translate(0, hz); x.fill(path); x.setTransform(1, 0, 0, 1, 0, 0);
+
+    // К основанию столбцы темнеют, яркий верх читается издалека
+    const shade = x.createLinearGradient(0, hz - maxH, 0, hz);
+    shade.addColorStop(0, "rgba(22,10,34,0)"); shade.addColorStop(1, "rgba(22,10,34,.62)");
+    x.globalCompositeOperation = "source-atop"; x.fillStyle = shade; x.fillRect(0, 0, W, hz);
+
+    // Отражение на полу
+    x.globalCompositeOperation = "source-over"; x.globalAlpha = .34; x.fillStyle = this.grad;
+    x.setTransform(1, 0, 0, -.36, 0, hz + 4 * dpr); x.fill(path); x.setTransform(1, 0, 0, 1, 0, 0);
+    x.globalAlpha = 1;
+    const fade = x.createLinearGradient(0, hz, 0, hz + maxH * .36);
+    fade.addColorStop(0, "rgba(0,0,0,.1)"); fade.addColorStop(1, "rgba(0,0,0,1)");
+    x.globalCompositeOperation = "destination-out"; x.fillStyle = fade; x.fillRect(0, hz, W, H - hz);
+
+    x.globalCompositeOperation = "source-over"; x.fillStyle = "#fff6e6";
+    x.translate(0, hz); x.fill(caps); x.setTransform(1, 0, 0, 1, 0, 0);
+
+    present(.75);
+  },
+};
+
+/* ───────────── Вид 2: круговой спектр ───────────── */
+const SPOKES = 96;   // на каждую половину круга
+const ringColors = Array.from({ length: SPOKES }, (_, i) => {
+  const u = i / (SPOKES - 1), s = [[255, 106, 213], [138, 125, 255], [124, 245, 255]];
+  const p = u * 2, k = Math.min(Math.floor(p), 1), f = p - k;
+  return s[k].map((c, j) => Math.round(c + (s[k + 1][j] - c) * f));
+}).map(c => `rgb(${c})`);
+
+const ring = {
+  title: "Круг",
+  canvas: c2d,
+  rot: 0, parts: [], seen: 0,
+  enter() { layer.x.setTransform(1, 0, 0, 1, 0, 0); layer.x.clearRect(0, 0, W, H); this.parts.length = 0; this.seen = A.beats; },
+  draw(dt, t) {
+    const S = Math.min(W, H), cx = W / 2, cy = H / 2, x = layer.x;
+    const R = S * .19 * (1 + A.bass * .13 * A.act), maxLen = S * .25;
+    this.rot += dt * (.03 + .2 * A.energy);
+
+    const bg = main.createRadialGradient(cx, cy, 0, cx, cy, Math.hypot(W, H) * .55);
+    bg.addColorStop(0, "#141640"); bg.addColorStop(.55, "#090b20"); bg.addColorStop(1, "#04050f");
+    main.fillStyle = bg; main.fillRect(0, 0, W, H);
+
+    // Шлейф: предыдущий кадр не стирается, а тает
+    x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1;
+    x.globalCompositeOperation = "destination-out";
+    x.fillStyle = `rgba(0,0,0,${follow(dt, .075)})`; x.fillRect(0, 0, W, H);
+    x.globalCompositeOperation = "lighter";
+
+    x.translate(cx, cy); x.rotate(this.rot);
+    const core = x.createRadialGradient(0, 0, 0, 0, 0, R * .92);
+    const coreA = .05 + (A.bass * .34 + A.beat * .14 * calm) * A.act;
+    core.addColorStop(0, `rgba(255,140,220,${coreA})`); core.addColorStop(.7, `rgba(120,100,255,${coreA * .55})`); core.addColorStop(1, "rgba(120,100,255,0)");
+    x.fillStyle = core; x.beginPath(); x.arc(0, 0, R * .92, 0, 7); x.fill();
+
+    x.lineCap = "round";
+    x.lineWidth = Math.max(1.5, 2 * Math.PI * R / (SPOKES * 2) * .5);
+    for (let i = 0; i < SPOKES; i++) {
+      const u = (i + .5) / SPOKES;
+      const breath = (1 - A.act) * (.018 + .012 * Math.sin(u * 8 + t * .5));
+      const v = clamp(sample(u) + breath), len = Math.max(1, v * maxLen);
+      for (const side of [1, -1]) {          // бас внизу, верха сходятся наверху
+        const a = Math.PI / 2 + side * u * Math.PI, ca = Math.cos(a), sa = Math.sin(a);
+        x.strokeStyle = ringColors[i];
+        x.globalAlpha = .95;
+        x.beginPath(); x.moveTo(ca * R, sa * R); x.lineTo(ca * (R + len), sa * (R + len)); x.stroke();
+        x.globalAlpha = .32;
+        const inner = R - 4 * dpr;
+        x.beginPath(); x.moveTo(ca * inner, sa * inner); x.lineTo(ca * (inner - len * .22), sa * (inner - len * .22)); x.stroke();
+      }
+    }
+    x.setTransform(1, 0, 0, 1, 0, 0);
+
+    // На сильной доле с кольца срываются искры
+    if (A.beats !== this.seen) {
+      this.seen = A.beats;
+      const count = Math.min(26, 8 + Math.round(A.bass * 22));
+      for (let i = 0; i < count && this.parts.length < 240; i++) {
+        const a = Math.random() * Math.PI * 2, sp = S * (.1 + Math.random() * .24 + A.bass * .18);
+        this.parts.push({ x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, c: ringColors[Math.floor(Math.random() * SPOKES)] });
+      }
+    }
+    for (let i = this.parts.length - 1; i >= 0; i--) {
+      const p = this.parts[i];
+      p.life -= dt / 1.25;
+      if (p.life <= 0) { this.parts.splice(i, 1); continue; }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.vx *= Math.exp(-dt * .9); p.vy *= Math.exp(-dt * .9);
+      x.globalAlpha = p.life * .9; x.fillStyle = p.c;
+      x.beginPath(); x.arc(p.x, p.y, (1 + p.life) * dpr, 0, 7); x.fill();
+    }
+    x.globalAlpha = 1; x.globalCompositeOperation = "source-over";
+    present(.9);
+  },
+};
+
+/* ───────────── Вид 3: свет (шейдер) ───────────── */
+const FRAG = `precision highp float;
+uniform vec2 u_res; uniform float u_t, u_bass, u_mid, u_high, u_beat, u_ring, u_act;
+const mat2 ROT = mat2(.8, .6, -.6, .8);
+float hash(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.23); return fract(p.x * p.y); }
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p), u = f * f * (3. - 2. * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+float fbm(vec2 p){
+  float a = .5, s = 0.;
+  for (int i = 0; i < 5; i++) { s += a * noise(p); p = ROT * p * 2.03 + 17.; a *= .5; }
+  return s;
+}
+void main(){
+  vec2 p = (gl_FragCoord.xy - .5 * u_res) / min(u_res.x, u_res.y);
+  float d = length(p);
+  p *= 1. - .1 * u_bass * exp(-d * 1.6);
+  vec2 s = p * 1.55;
+  vec2 q = vec2(fbm(s + u_t * .9), fbm(s + vec2(5.2, 1.3) - u_t * .7));
+  float warp = 2.1 + u_bass * 2.;
+  vec2 r = vec2(fbm(s + warp * q + vec2(1.7, 9.2) + u_t * .4), fbm(s + warp * q + vec2(8.3, 2.8) - u_t * .3));
+  float f = fbm(s + (2.3 + u_mid) * r);
+
+  vec3 c = vec3(.012, .022, .07);
+  c = mix(c, vec3(.03, .27, .36), smoothstep(.14, .55, f));
+  c = mix(c, vec3(.86, .10, .46), smoothstep(.38, .82, length(q) * f * 1.75));
+  c = mix(c, vec3(1., .66, .18), smoothstep(.5, .88, r.x * f * 2.05));
+
+  float ridge = pow(1. - abs(2. * f - 1.), 7.);              // тонкие светящиеся нити оживают от верхов
+  c += vec3(1., .78, .55) * ridge * (.03 + u_high * .5) * u_act;
+  float shell = exp(-34. * (d - u_ring) * (d - u_ring)) * u_beat;  // волна от сильной доли
+  c += vec3(.95, .42, .62) * shell * f * 1.3;
+
+  float level = mix(.3, .5 + u_mid * .3 + u_bass * .5, u_act);
+  c *= level;
+  c *= 1. - .45 * smoothstep(.35, 1.15, d);
+  c = c * (1. + c * .25) / (1. + c * .55);                    // мягкий потолок яркости
+  c = pow(max(c, 0.), vec3(.95));
+  c += (hash(gl_FragCoord.xy + u_t) - .5) / 255.;            // убирает полосы на плавных переходах
+  gl_FragColor = vec4(c, 1.);
+}`;
+
+const light = {
+  title: "Свет",
+  canvas: cgl,
+  ok: false, gl: null, u: null, flow: 40, ring: 0, seen: 0, scale: .7, slow: 0, slowFor: 0, cw: 0, ch: 0,
+  init() {
+    const gl = this.gl = this.gl || cgl.getContext("webgl", { antialias: false, alpha: false, powerPreference: "high-performance" });
+    if (!gl) return;
+    const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+    const vs = sh(gl.VERTEX_SHADER, "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}");
+    const fs = sh(gl.FRAGMENT_SHADER, FRAG);
+    const pr = gl.createProgram();
+    gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
+    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { console.error(gl.getShaderInfoLog(fs)); return; }
+    gl.useProgram(pr);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(pr, "a");
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    this.u = {};
+    for (const n of ["res", "t", "bass", "mid", "high", "beat", "ring", "act"]) this.u[n] = gl.getUniformLocation(pr, "u_" + n);
+    this.ok = true; this.cw = 0;
+  },
+  enter() { this.seen = A.beats; this.slow = 0; this.slowFor = 0; },
+  draw(dt) {
+    if (!this.ok) return;
+    const gl = this.gl;
+    // Если машина не успевает, снижаем разрешение, а не плавность
+    this.slow += (dt * 1000 - this.slow) * follow(dt, .5);
+    this.slowFor = this.slow > 26 ? this.slowFor + dt : 0;
+    if (this.slowFor > 1 && this.scale > .3) { this.scale *= .8; this.slowFor = 0; this.cw = 0; }
+    const cw = Math.max(1, Math.round(innerWidth * this.scale)), ch = Math.max(1, Math.round(innerHeight * this.scale));
+    if (cw !== this.cw || ch !== this.ch) { cgl.width = this.cw = cw; cgl.height = this.ch = ch; gl.viewport(0, 0, cw, ch); }
+
+    this.flow += dt * (.012 + A.act * (.045 + .17 * A.energy));   // в тишине почти замирает
+    if (A.beats !== this.seen) { this.seen = A.beats; this.ring = 0; }
+    this.ring += dt * .75;
+    const u = this.u;
+    gl.uniform2f(u.res, cw, ch);
+    gl.uniform1f(u.t, this.flow);
+    gl.uniform1f(u.bass, A.bass * A.act); gl.uniform1f(u.mid, A.mid * A.act); gl.uniform1f(u.high, A.high * A.act);
+    gl.uniform1f(u.beat, A.beat * A.act * calm); gl.uniform1f(u.ring, this.ring); gl.uniform1f(u.act, A.act);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+};
+cgl.addEventListener("webglcontextlost", e => { e.preventDefault(); light.ok = false; });
+cgl.addEventListener("webglcontextrestored", () => light.init());
+
+/* ───────────── Смена видов ───────────── */
+light.init();
+const views = light.ok ? [bars, ring, light] : [bars, ring];
+const remember = {
+  get() { try { return parseInt(localStorage.getItem("eq-view"), 10) || 0; } catch { return 0; } },
+  set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },
+};
+let cur = clamp(remember.get(), 0, views.length - 1);
+let started = false;
+
+function show(i, announce) {
+  cur = (i + views.length) % views.length;
+  remember.set(cur);
+  const v = views[cur];
+  c2d.hidden = v.canvas !== c2d;
+  cgl.hidden = v.canvas !== cgl;
+  v.enter();
+  if (announce) {
+    $("veil").animate([{ opacity: 1 }, { opacity: 0 }], { duration: calm < 1 ? 1 : 320, easing: "ease-out" });
+    flash($("name"), v.title, 1400);
+  }
+}
+
+const timers = new Map();
+function flash(el, text, ms) {
+  if (text != null) el.textContent = text;
+  el.classList.add("on");
+  clearTimeout(timers.get(el));
+  timers.set(el, setTimeout(() => el.classList.remove("on"), ms));
+}
+
+/* ───────────── Запуск ───────────── */
+let wantFullscreen = false;
+const isFull = () => !!document.fullscreenElement;
+async function goFull() {
+  try { await document.documentElement.requestFullscreen({ navigationUI: "hide" }); wantFullscreen = false; return true; }
+  catch { return false; }
+}
+function toggleFull() {
+  wantFullscreen = false;
+  if (isFull()) document.exitFullscreen().catch(() => {}); else goFull();
+}
+
+const FAIL = {
+  NotAllowedError: ["Микрофон запрещён", "Нажмите на значок слева от адреса сайта, разрешите микрофон и обновите страницу. Если там уже разрешено, откройте на Mac: Системные настройки → Конфиденциальность и безопасность → Микрофон и включите браузер."],
+  NotFoundError: ["Микрофон не найден", "Подключите микрофон или проверьте, что он выбран в настройках звука, и попробуйте снова."],
+  NotReadableError: ["Микрофон занят", "Его использует другая программа или система его не отдаёт. Закройте её и попробуйте снова."],
+  lost: ["Микрофон отключился", "Проверьте подключение и включите его снова."],
+  insecure: ["Браузер не даёт доступ к микрофону", "Откройте страницу по адресу, который начинается с https://."],
+  other: ["Не получилось включить микрофон", "Обновите страницу и попробуйте снова. Лучше всего работает Chrome."],
+};
+function fail(kind) {
+  const [head, text] = FAIL[kind] || FAIL.other;
+  started = false; mic = null;
+  $("head").textContent = head;
+  $("lede").textContent = text;
+  $("start").textContent = "Попробовать снова";
+  $("start").disabled = false;
+  $("gate").hidden = false;
+  document.body.classList.remove("no-cursor");
+  if (isFull()) document.exitFullscreen().catch(() => {});
+}
+
+let wake = null;
+async function keepAwake() {
+  try { if (navigator.wakeLock && document.visibilityState === "visible") wake = await navigator.wakeLock.request("screen"); } catch {}
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (started) keepAwake();
+  if (mic && mic.ctx.state !== "running") mic.ctx.resume().catch(() => {});
+});
+
+$("start").addEventListener("click", async () => {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return fail("insecure");
+  $("start").disabled = true;
+
+  // Если доступ уже дан, окна с вопросом не будет и полный экран можно включить сразу.
+  // Иначе ждём ответа: браузер закрыл бы полный экран ради вопроса о микрофоне.
+  let granted = false;
+  try { granted = (await navigator.permissions.query({ name: "microphone" })).state === "granted"; } catch {}
+  let full = granted ? goFull() : null;
+
+  let ctx = null;
+  try { ctx = new AudioContext({ latencyHint: "interactive" }); ctx.resume().catch(() => {}); } catch { return fail("other"); }
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
+    });
+  } catch (e) {
+    ctx.close().catch(() => {});
+    return fail(e && e.name in FAIL ? e.name : "other");
+  }
+  await ctx.resume().catch(() => {});
+  mic = openAnalyser(ctx, stream);
+  stream.getAudioTracks().forEach(tr => tr.addEventListener("ended", () => fail("lost")));
+
+  $("gate").hidden = true;
+  started = true;
+  keepAwake();
+  if (!full) full = goFull();
+  if (!(await full)) wantFullscreen = true;        // пока длился вопрос, браузер забыл про клик
+  if (wantFullscreen) flash($("hint"), "Кликните в любом месте, чтобы открыть на весь экран", 6000);
+  else flash($("hint"), null, 5000);
+  armCursor();
+});
+
+/* ───────────── Управление ───────────── */
+let cursorTimer = 0;
+function armCursor() {
+  document.body.classList.remove("no-cursor");
+  clearTimeout(cursorTimer);
+  if (started) cursorTimer = setTimeout(() => document.body.classList.add("no-cursor"), 2000);
+}
+const HINT_HTML = $("hint").innerHTML;
+addEventListener("mousemove", () => {
+  armCursor();
+  if (started && !wantFullscreen) { $("hint").innerHTML = HINT_HTML; flash($("hint"), null, 2000); }
+});
+addEventListener("pointerdown", e => {
+  if (!started || e.target.closest("#gate")) return;
+  if (wantFullscreen) { goFull(); $("hint").classList.remove("on"); return; }
+  show(cur + 1, true);
+});
+addEventListener("keydown", e => {
+  if (!started || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+  const k = e.key;
+  if (k === "ArrowRight") show(cur + 1, true);
+  else if (k === "ArrowLeft") show(cur - 1, true);
+  else if (/^[1-9]$/.test(k) && +k <= views.length) show(+k - 1, true);
+  else if (e.code === "KeyF") toggleFull();
+  else return;
+  e.preventDefault();
+});
+addEventListener("resize", resize);
+
+/* ───────────── Кадр ───────────── */
+let last = performance.now(), T = 0;
+function frame(now) {
+  const dt = Math.min(.1, Math.max(.001, (now - last) / 1000));
+  last = now; T += dt;
+  A.sinceBeat += dt;
+  A.beat *= Math.exp(-dt / .18);
+  if (mic) readMic(mic, dt); else readDemo(dt, T);
+  views[cur].draw(dt, T);
+  requestAnimationFrame(frame);
+}
+resize();
+show(cur, false);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

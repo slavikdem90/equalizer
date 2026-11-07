@@ -73,12 +73,13 @@
 </section>
 
 <div id="name" class="hud" role="status"></div>
-<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>7</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>F</kbd> весь экран</div>
+<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>8</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>F</kbd> весь экран</div>
 
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
 const clamp = (x, a = 0, b = 1) => x < a ? a : x > b ? b : x;
+const rnd = (a, b) => a + Math.random() * (b - a);
 const follow = (dt, tau) => 1 - Math.exp(-dt / tau);          // сглаживание, не зависящее от частоты кадров
 const calm = matchMedia("(prefers-reduced-motion: reduce)").matches ? .35 : 1; // меньше вспышек по запросу системы
 
@@ -307,9 +308,115 @@ const ringColors = Array.from({ length: SPOKES }, (_, i) => {
 const ring = {
   title: "Круг",
   canvas: c2d,
-  rot: 0, parts: [], seen: 0,
-  enter() { layer.x.setTransform(1, 0, 0, 1, 0, 0); layer.x.clearRect(0, 0, W, H); this.parts.length = 0; this.seen = A.beats; },
+  variants: ["неон", "чёрная дыра"], variant: 0,
+  rot: 0, parts: [], seen: 0, spin: 0, stars: null, falling: [],
+  enter() { layer.x.setTransform(1, 0, 0, 1, 0, 0); layer.x.clearRect(0, 0, W, H); this.parts.length = 0; this.falling.length = 0; this.seen = A.beats; },
+  onVariant() { this.enter(); },
+
+  // Вариация «чёрная дыра»: чёрный фон, только белые линии
+  drawHole(dt, t) {
+    const S = Math.min(W, H), cx = W / 2, cy = H / 2, x = layer.x, act = A.act;
+    if (!this.stars) this.stars = Array.from({ length: 170 }, () => ({ x: Math.random(), y: Math.random(), r: rnd(.4, 1.3), a: rnd(.15, .7), p: rnd(0, 7) }));
+    const R = S * .125 * (1 + A.bass * .07 * act);               // горизонт событий
+    const tilt = .19 + .025 * Math.sin(t * .17);
+    this.spin += dt * (.12 + 1.5 * A.energy * act);
+
+    main.fillStyle = "#000"; main.fillRect(0, 0, W, H);
+    main.fillStyle = "#fff";
+    for (const st of this.stars) {
+      main.globalAlpha = st.a * (.75 + .25 * Math.sin(t * 1.3 + st.p));
+      main.fillRect(st.x * W, st.y * H, st.r * dpr, st.r * dpr);
+    }
+    main.globalAlpha = 1;
+
+    x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "source-over"; x.globalAlpha = 1;
+    x.clearRect(0, 0, W, H);
+    x.strokeStyle = "#fff"; x.lineCap = "round"; x.lineJoin = "round";
+
+    // Аккреционный диск: орбиты, внутренние на басу, внешние на верхах; внутренние крутятся быстрее
+    const RINGS = 14;
+    const disk = front => {
+      for (let i = 0; i < RINGS; i++) {
+        const u = i / (RINGS - 1), r = R * (1.6 + u * 2.05), level = sample(.06 + u * .86) * act;
+        x.globalAlpha = .18 + (1 - u) * .22 + level * .6;
+        x.lineWidth = Math.max(1, (1.4 - u * .6) * dpr);
+        const dash = S * (.006 + u * .02);
+        x.setLineDash([dash * (1.5 + level * 2), dash]);
+        x.lineDashOffset = -this.spin * S * .25 / Math.pow(.35 + u, 1.5);
+        x.beginPath();
+        for (let k = 0; k <= 90; k++) {
+          const a = (front ? 0 : Math.PI) + k / 90 * Math.PI;
+          const rr = r * (1 + level * .07 * Math.sin(a * (3 + i % 4) + this.spin * (2 + i * .3)));
+          const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr * tilt;
+          k ? x.lineTo(px, py) : x.moveTo(px, py);
+        }
+        x.stroke();
+      }
+      x.setLineDash([]);
+    };
+    disk(false);                                                // задняя половина, за горизонтом
+
+    // Дальняя сторона диска, изогнутая гравитацией над дырой
+    for (let j = 0; j < 5; j++) {
+      const r = R * (1.2 + j * .16), level = sample(.08 + j * .12) * act;
+      x.lineWidth = Math.max(1, (1.3 - j * .15) * dpr);
+      x.globalAlpha = .55 - j * .08 + level * .4;
+      x.beginPath(); x.ellipse(cx, cy, r * 1.06, r * (.92 + level * .08), 0, Math.PI, Math.PI * 2); x.stroke();
+      x.globalAlpha = .16 - j * .02;
+      x.beginPath(); x.ellipse(cx, cy, r * 1.02, r * .7, 0, 0, Math.PI); x.stroke();
+    }
+
+    x.globalAlpha = 1; x.fillStyle = "#000";
+    x.beginPath(); x.arc(cx, cy, R, 0, 7); x.fill();
+    x.lineWidth = Math.max(1.5, 2.2 * dpr);
+    x.globalAlpha = clamp(.8 + A.beat * .5 * calm);
+    x.beginPath(); x.arc(cx, cy, R, 0, 7); x.stroke();
+
+    // Фотонные кольца: контуры спектра вокруг горизонта, бас внизу, верха наверху
+    for (let j = 0; j < 3; j++) {
+      const base = R * (1.05 + j * .05), amp = S * (.06 - j * .016);
+      x.lineWidth = Math.max(1, (1.6 - j * .4) * dpr);
+      x.globalAlpha = .85 - j * .25;
+      x.beginPath();
+      for (let k = 0; k <= 180; k++) {
+        const a = k / 180 * Math.PI * 2;
+        let d = Math.abs(((a - Math.PI / 2) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI);
+        const v = Math.pow(sample(d / Math.PI), 1 + j * .5) * act;
+        const rr = base + amp * v + (1 - act) * R * .012 * Math.sin(a * 5 + t * .6);
+        const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr;
+        k ? x.lineTo(px, py) : x.moveTo(px, py);
+      }
+      x.stroke();
+    }
+
+    disk(true);                                                 // передняя половина проходит перед дырой
+
+    // На сильной доле вещество падает в дыру по спирали
+    if (A.beats !== this.seen) {
+      this.seen = A.beats;
+      const n = Math.round((4 + A.bass * 12) * act);
+      for (let i = 0; i < n && this.falling.length < 160; i++) this.falling.push({ r: R * rnd(3.4, 4.1), a: rnd(0, 7), px: null, py: null });
+    }
+    x.lineWidth = Math.max(1, 1.4 * dpr);
+    for (let i = this.falling.length - 1; i >= 0; i--) {
+      const p = this.falling[i];
+      p.a += dt * 1.7 * Math.pow(R / p.r, 1.5) * 2.6 * (1 + A.energy * 1.5);
+      p.r -= dt * p.r * (.22 + A.energy * .5);
+      if (p.r < R * 1.05) { this.falling.splice(i, 1); continue; }
+      const px = cx + Math.cos(p.a) * p.r, py = cy + Math.sin(p.a) * p.r * tilt;
+      const hidden = Math.sin(p.a) < 0 && Math.hypot(px - cx, py - cy) < R * 1.02;
+      if (p.px !== null && !hidden) {
+        x.globalAlpha = clamp(.95 - p.r / (R * 5));
+        x.beginPath(); x.moveTo(p.px, p.py); x.lineTo(px, py); x.stroke();
+      }
+      p.px = px; p.py = py;
+    }
+    x.globalAlpha = 1;
+    present(.75);
+  },
+
   draw(dt, t) {
+    if (this.variant === 1) return this.drawHole(dt, t);
     const S = Math.min(W, H), cx = W / 2, cy = H / 2, x = layer.x;
     const R = S * .19 * (1 + A.bass * .13 * A.act), maxLen = S * .25;
     this.rot += dt * (.03 + .2 * A.energy);
@@ -453,7 +560,7 @@ function shaderView({ title, frag, scale, speed, palettes, paletteSpeed, before 
       this.pr = stage.program(frag);
       if (!this.pr) return;
       this.u = {};
-      for (const n of ["res", "t", "bass", "mid", "high", "beat", "ring", "act", "streak", "c1", "c2", "c3"]) this.u[n] = stage.gl.getUniformLocation(this.pr, "u_" + n);
+      for (const n of ["res", "t", "bass", "mid", "high", "beat", "ring", "act", "streak", "c1", "c2", "c3", "variant"]) this.u[n] = stage.gl.getUniformLocation(this.pr, "u_" + n);
       this.ok = true;
     },
     enter() { this.seen = A.beats; this.slow = 0; this.slowFor = 0; },
@@ -480,6 +587,7 @@ function shaderView({ title, frag, scale, speed, palettes, paletteSpeed, before 
       gl.uniform1f(u.beat, A.beat * A.act * calm); gl.uniform1f(u.ring, this.ring); gl.uniform1f(u.act, A.act);
       gl.uniform1f(u.streak, clamp(v * 1.5));
       if (before) before(gl);
+      gl.uniform1f(u.variant, this.variant || 0);
       if (palettes) {   // палитры плавно перетекают одна в другую
         this.hue = (this.hue + dt * paletteSpeed()) % palettes.length;
         const i = Math.floor(this.hue), k = this.hue - i, e = k * k * (3 - 2 * k), A0 = palettes[i], B0 = palettes[(i + 1) % palettes.length];
@@ -548,7 +656,7 @@ const space = shaderView({ title: "Космос", frag: SPACE, scale: 1, speed: 
 
 /* ───────────── Вид 7: огонь ───────────── */
 const FIRE = `precision highp float;
-uniform vec2 u_res; uniform float u_t, u_beat, u_high, u_act; uniform sampler2D u_spec;
+uniform vec2 u_res; uniform float u_t, u_beat, u_high, u_act, u_variant; uniform sampler2D u_spec;
 const mat2 ROT = mat2(.8, .6, -.6, .8);
 float hash(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.23); return fract(p.x * p.y); }
 float noise(vec2 p){
@@ -597,6 +705,10 @@ void main(){
       c += vec3(1., .5, .12) * smoothstep(.09, .01, length(q)) * life * (.22 + u_high * 1.2) * u_act;
     }
   }
+  if (u_variant > .5) {                                        // чёрно-белый огонь, как на старой плёнке
+    float l = dot(c, vec3(.3, .59, .11));
+    c = vec3(smoothstep(.04, 1., pow(l, 1.7) * 1.35));
+  }
   c += (hash(gl_FragCoord.xy + u_t) - .5) / 255.;
   gl_FragColor = vec4(c, 1.);
 }`;
@@ -622,12 +734,13 @@ const fire = shaderView({
   },
 });
 
+fire.variants = ["цветной", "чёрно-белый"];
+fire.variant = 0;
 const shaderViews = [light, space, fire];
 cgl.addEventListener("webglcontextlost", e => { e.preventDefault(); shaderViews.forEach(v => { v.ok = false; }); specTex = null; });
 cgl.addEventListener("webglcontextrestored", () => { stage.gl = null; if (stage.init()) shaderViews.forEach(v => v.init()); });
 
 /* ───────────── Вид 5: бактерии ───────────── */
-const rnd = (a, b) => a + Math.random() * (b - a);
 const SHAPES = {
   rod: { len0: .034, len1: .072, w: .016, curve: .04, swim: .9, flag: true },
   vibrio: { len0: .022, len1: .048, w: .012, curve: .28, swim: 1.3, flag: true },
@@ -853,6 +966,91 @@ const bacteria = {
   },
 };
 
+/* ───────────── Вид 8: снег ───────────── */
+const flakeSprite = (() => {
+  const c = document.createElement("canvas"); c.width = c.height = 64;
+  const x = c.getContext("2d"), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(.35, "rgba(235,244,255,.75)"); g.addColorStop(1, "rgba(220,235,255,0)");
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  return c;
+})();
+const snow = {
+  title: "Снег",
+  canvas: c2d,
+  flakes: [], drift: new Float32Array(160), wind: 0, gust: 0, seen: 0,
+  build() {
+    for (let i = 0; i < 1100; i++) {
+      const z = Math.pow(Math.random(), 1.8);                   // большинство снежинок далеко
+      this.flakes.push({ x: Math.random(), y: Math.random(), z, p: rnd(0, 7), f: rnd(.5, 1.6), tw: rnd(0, 7) });
+    }
+  },
+  enter() { this.seen = A.beats; },
+  draw(dt, t) {
+    if (!this.flakes.length) this.build();
+    const x = layer.x, S = Math.min(W, H), act = A.act;
+    // Ветер от баса, на ударах порыв; сила звука задаёт густоту и скорость снегопада
+    if (A.beats !== this.seen) { this.seen = A.beats; this.gust += (.25 + A.bass * .9) * act * calm; }
+    this.gust *= Math.exp(-dt * 1.4);
+    const windTo = (Math.sin(t * .07) * .5 + A.bass * .9 * act) * (Math.sin(t * .031) > -.3 ? 1 : -1);
+    this.wind += (windTo - this.wind) * follow(dt, 1.2);
+    const wind = this.wind + this.gust, fall = .35 + act * (.25 + A.energy * 1.6);
+    const density = .35 + .65 * clamp(act * A.energy * 1.7);
+
+    const sky = main.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, "#03060d"); sky.addColorStop(.7, "#0a1426"); sky.addColorStop(1, "#13213a");
+    main.fillStyle = sky; main.fillRect(0, 0, W, H);
+    const moon = main.createRadialGradient(W * .78, H * .18, 0, W * .78, H * .18, S * .42);
+    const glow = .07 + A.bass * .1 * act;
+    moon.addColorStop(0, `rgba(190,215,255,${glow})`); moon.addColorStop(1, "rgba(190,215,255,0)");
+    main.fillStyle = moon; main.fillRect(0, 0, W, H);
+
+    x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "source-over"; x.globalAlpha = 1;
+    x.clearRect(0, 0, W, H);
+
+    // Сугробы повторяют спектр: бас слева, верха справа
+    const n = this.drift.length;
+    for (let i = 0; i < n; i++) {
+      let sum = 0, k = 0;
+      for (let j = -6; j <= 6; j++) { sum += sample(clamp((i + j * 1.6) / n)); k++; }
+      const target = .045 + .22 * (sum / k) * act + .012 * Math.sin(i * .21 + t * .15);
+      this.drift[i] += (target - this.drift[i]) * follow(dt, target > this.drift[i] ? .12 : .9);
+    }
+    const groundY = i => H - this.drift[Math.min(n - 1, Math.max(0, i))] * H;
+
+    const N = this.flakes.length;
+    for (let i = 0; i < N; i++) {
+      const f = this.flakes[i], depth = .25 + f.z * .75;
+      f.y += dt * fall * (.05 + depth * .16) * f.f;
+      f.x += dt * (wind * (.03 + depth * .16) + Math.sin(t * f.f * .9 + f.p) * .012 * depth);
+      if (f.x > 1.05) f.x -= 1.1; if (f.x < -.05) f.x += 1.1;
+      const px = f.x * W, py = f.y * H;
+      if (f.y > 1.02 || (f.z > .5 && py > groundY(Math.floor(f.x * n)))) { f.y = -.03; f.x = Math.random(); continue; }
+      const show = clamp((density * N - i) / 60);
+      if (show <= 0) continue;
+      const r = (.6 + depth * depth * 5.5) * dpr * S / 900;
+      const sparkle = 1 + Math.max(0, Math.sin(t * 6 + f.tw)) * A.high * act * 1.4;
+      x.globalAlpha = clamp((.25 + depth * .7) * show * sparkle);
+      if (r < 1.6 * dpr) x.fillRect(px - r, py - r, r * 2, r * 2);
+      else x.drawImage(flakeSprite, px - r * 2, py - r * 2, r * 4, r * 4);
+    }
+
+    // Сугроб с освещённым гребнем
+    x.globalAlpha = 1;
+    const ground = x.createLinearGradient(0, H * .7, 0, H);
+    ground.addColorStop(0, "#9fb4d2"); ground.addColorStop(1, "#2e4064");
+    x.fillStyle = ground;
+    x.beginPath(); x.moveTo(0, H);
+    for (let i = 0; i < n; i++) x.lineTo(i / (n - 1) * W, groundY(i));
+    x.lineTo(W, H); x.closePath(); x.fill();
+    x.strokeStyle = "#eef5ff"; x.lineWidth = Math.max(1, 1.5 * dpr); x.globalAlpha = .55 + A.high * .4 * act;
+    x.beginPath();
+    for (let i = 0; i < n; i++) { const px = i / (n - 1) * W; i ? x.lineTo(px, groundY(i)) : x.moveTo(px, groundY(i)); }
+    x.stroke();
+    x.globalAlpha = 1;
+    present(.35 + A.energy * .2);
+  },
+};
+
 /* ───────────── Вид 6: краски (симуляция жидкости) ───────────── */
 // Пигменты хранятся как поглощение света: синий и жёлтый вместе дают зелёный, как на настоящей палитре
 const PIGMENTS = [
@@ -1012,6 +1210,13 @@ const paint = {
       const at = [rnd(.14, .86), rnd(.16, .84)], bass = A.bass * A.act;
       if (this.turn % 5 === 0) this.pour(at, [-2, -2, -2], 1, .016, 60 + bass * 90);   // белила освежают холст
       else this.pour(at, PIGMENTS[this.turn % PIGMENTS.length], .55 + bass * .85, rnd(.003, .007) * (1 + bass), (60 + bass * 130) * calm);
+      if (bass > .28) {                   // на басах по холсту разлетаются капли и пятна
+        const drops = 1 + Math.round(bass * 4);
+        for (let i = 0; i < drops; i++) {
+          const r = rnd(.0008, .0032) * (.6 + bass);
+          this.pour([rnd(.06, .94), rnd(.08, .92)], PIGMENTS[Math.floor(Math.random() * PIGMENTS.length)], .9 + bass, r, 18 * calm);
+        }
+      }
     }
     // Три кисти: на басах, середине и верхах
     this.phase += h * (.1 + A.energy * .9);
@@ -1068,7 +1273,7 @@ paint.canvas.addEventListener("webglcontextrestored", () => paint.init());
 /* ───────────── Смена видов ───────────── */
 if (stage.init()) shaderViews.forEach(v => v.init());
 paint.init();
-const views = [bars, ring, light, space, bacteria, paint, fire].filter(v => v.ok !== false);
+const views = [bars, ring, light, space, bacteria, paint, fire, snow].filter(v => v.ok !== false);
 const remember = {
   get() { try { return parseInt(localStorage.getItem("eq-view"), 10) || 0; } catch { return 0; } },
   set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },

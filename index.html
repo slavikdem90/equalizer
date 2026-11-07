@@ -81,7 +81,7 @@
 </section>
 
 <div id="name" class="hud" role="status"></div>
-<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>9</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>F</kbd> весь экран</div>
+<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>F</kbd> весь экран</div>
 
 <script>
 "use strict";
@@ -1230,6 +1230,203 @@ const snow = {
   },
 };
 
+/* ───────────── Вид 10: райдер и грибы (пиксельная графика) ───────────── */
+// Свой герой: сноубордист в оранжевой шапке и маске. Спрайты задаются строками, одна буква — один пиксель
+const RIDER_COLORS = { K: "#1a1420", O: "#ff7a2e", Y: "#ffb35a", S: "#f2c39a", G: "#2fd6ff", J: "#1f8a8a", j: "#145e5e", P: "#2a3550", B: "#0f0c16", W: "#e9f3ff" };
+const RIDER = {
+  ride: ["....OOO.....", "...OOOOO....", "...YYYYY....", "...SGGGK....", "...SSSSS....", "..JJJJJJ....", ".JJJJJJJJ...", "SJJJJJJjJS..", "..JJJJjj....", "..PPPPPP....", "..PP..PP....", ".PP....PP...", ".BB....BB..."],
+  crouch: ["............", "............", "....OOO.....", "...OOOOO....", "...YYYYY....", "...SGGGK....", "...SSSSS....", ".SJJJJJJJS..", "..JJJJJjj...", "..PPPPPPP...", ".PPP...PPP..", ".BB.....BB.."],
+  air: ["....OOO.....", "...OOOOO....", "...YYYYY....", "...SGGGK....", "...SSSSS....", "..JJJJJJ....", ".JJJJJJJJS..", ".SJJJJJjJ...", "..PPPPPPP...", ".PPP..PPP...", ".BB....BB..."],
+};
+const SHROOMS = [
+  { cap: "#8a4b2a", light: "#c0773f", stem: "#eadbb6", glow: false },
+  { cap: "#16a99c", light: "#7af2e0", stem: "#d4efe9", glow: true },
+  { cap: "#7a3fb5", light: "#c99af5", stem: "#e9def4", glow: true },
+  { cap: "#e8902a", light: "#ffc560", stem: "#f2cf8e", glow: false },
+  { cap: "#3d6fe0", light: "#a4c4ff", stem: "#e1e9ff", glow: true },
+];
+const n1 = (x, seed) => {                                       // одномерный шум для гор
+  const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f);
+  const h = k => { const v = Math.sin((k + seed * 131.7) * 127.1) * 43758.5453; return v - Math.floor(v); };
+  return h(i) * (1 - u) + h(i + 1) * u;
+};
+const rider = {
+  title: "Райдер",
+  canvas: c2d,
+  low: null, lx: null, VW: 0, VH: 0, wx: 0, y: 0, vy: 0, spin: 0, spinning: false, shrooms: [], spray: [], flakes: [], stars: [],
+  nextGap: 60, seen: 0, boost: 0, jumps: 0, bounces: 0, crouch: 0,
+  groundY(x) { return this.VH * .8 + 5 * Math.sin(x * .012) + 3 * Math.sin(x * .029 + 1.3); },
+  enter() { this.seen = A.beats; },
+  fit() {
+    const asp = W / H;
+    const VH = asp >= 1 ? 140 : Math.round(Math.max(140, 170 / asp));   // крупные пиксели, райдера хорошо видно
+    const VW = Math.round(VH * asp);
+    if (VW === this.VW && VH === this.VH) return;
+    this.VW = VW; this.VH = VH;
+    this.low = document.createElement("canvas"); this.low.width = VW; this.low.height = VH;
+    this.lx = this.low.getContext("2d");
+    this.stars = Array.from({ length: Math.round(VW * .35) }, () => ({ x: Math.floor(Math.random() * VW), y: Math.floor(Math.random() * VH * .55), p: rnd(0, 7), b: Math.random() }));
+    this.flakes = Array.from({ length: 70 }, () => ({ x: Math.random() * VW, y: Math.random() * VH, v: rnd(6, 16) }));
+  },
+  sprite(x, name, ox, oy) {
+    const rows = RIDER[name];
+    for (let r = 0; r < rows.length; r++) for (let c = 0; c < rows[r].length; c++) {
+      const ch = rows[r][c];
+      if (ch === ".") continue;
+      x.fillStyle = RIDER_COLORS[ch]; x.fillRect(ox + c, oy + r, 1, 1);
+    }
+  },
+  draw(dt, t) {
+    this.fit();
+    const x = this.lx, VW = this.VW, VH = this.VH, act = A.act;
+    const loud = clamp((A.energy - .38) / .3) * act;
+    this.boost += (loud - this.boost) * follow(dt, loud > this.boost ? .2 : 1.1);
+    const speed = clamp((act - .05) / .95) * (18 + 95 * A.energy + 70 * this.boost * this.boost);   // в тишине райдер стоит
+    this.wx += speed * dt;
+    const rx = Math.round(VW * .3), rwx = this.wx + rx;
+
+    // Небо полосами, звёзды, луна
+    const bands = ["#090d24", "#101839", "#1a2550", "#273766", "#3a4d86"];
+    bands.forEach((c, i) => { x.fillStyle = c; x.fillRect(0, Math.floor(i * VH * .13), VW, Math.ceil(VH * .13) + 1); });
+    x.fillStyle = "#3a4d86"; x.fillRect(0, Math.floor(VH * .65), VW, VH);
+    for (const st of this.stars) {
+      const tw = st.b > .7 ? .5 + .5 * Math.sin(t * 3 + st.p) * (.3 + A.high * act) : .6;
+      x.globalAlpha = clamp(.35 + tw * .65); x.fillStyle = st.b > .85 ? "#ffe9b0" : "#dfe8ff"; x.fillRect(st.x, st.y, 1, 1);
+    }
+    x.globalAlpha = 1;
+    const mx = Math.round(VW * .82), my = Math.round(VH * .16), mr = 9;
+    for (let yy = -mr; yy <= mr; yy++) { const w = Math.round(Math.sqrt(mr * mr - yy * yy)); x.fillStyle = "#e9eefc"; x.fillRect(mx - w, my + yy, w * 2, 1); }
+    x.fillStyle = "#c9d2ee"; x.fillRect(mx - 3, my - 2, 2, 2); x.fillRect(mx + 2, my + 3, 3, 2);
+
+    // Горы с параллаксом
+    const range = (par, seed, base, amp, col, snowCap) => {
+      for (let c = 0; c < VW; c++) {
+        const w = (this.wx * par + c) * .02;
+        const h = Math.round(base + amp * (n1(w, seed) * .7 + n1(w * 2.3, seed + 3) * .3));
+        x.fillStyle = col; x.fillRect(c, VH - h, 1, h);
+        if (snowCap) { x.fillStyle = snowCap; x.fillRect(c, VH - h, 1, 2); }
+      }
+    };
+    range(.12, 1, VH * .38, VH * .3, "#34477f", "#9fb2e3");   // дальние горы светлее неба, как в дымке
+    range(.35, 2, VH * .27, VH * .22, "#141b3a", "#c3d2f2");   // ближние тёмным силуэтом
+
+    // Грибы: появляются впереди и растут от звука, бас растит большие, верха мелкие
+    if (speed > 0) {
+      this.nextGap -= speed * dt;
+      if (this.nextGap <= 0) {
+        const big = Math.random() < .5;
+        this.shrooms.push({ wx: this.wx + VW + 12, kind: SHROOMS[Math.floor(Math.random() * SHROOMS.length)], big, h: 0, phase: rnd(0, 7), squash: 0 });
+        this.nextGap = rnd(28, 90) / (.6 + A.energy);
+      }
+    }
+    if (A.beats !== this.seen) {                                   // удар: прыжок, грибы подрастают
+      this.seen = A.beats;
+      for (const m of this.shrooms) if (m.big) m.h = Math.min(m.h + A.bass * 3 * act, 34);
+      if (this.y <= 0 && A.bass > .25 && act > .2) {
+        this.vy = Math.min(150, 65 + 110 * A.bass * (1 + this.boost * .5)); this.jumps++;
+        if (A.bass > .55 && this.boost > .35) { this.spinning = true; this.spin = 0; }
+      }
+    }
+    for (let i = this.shrooms.length - 1; i >= 0; i--) {
+      const m = this.shrooms[i], sx = Math.round(m.wx - this.wx);
+      if (sx < -30) { this.shrooms.splice(i, 1); continue; }
+      const target = m.big ? 7 + 24 * A.bass * act + 5 * A.mid * act : 3 + 8 * A.high * act;
+      if (target > m.h) m.h += (target - m.h) * follow(dt, .25);
+      m.squash *= Math.exp(-dt * 9);
+      const gy = Math.round(this.groundY(m.wx)), h = Math.round(m.h);
+      const cw = Math.round((m.big ? 7 : 4) + m.h * .55), chh = Math.max(2, Math.round(cw * .42 * (1 - m.squash * .4)));
+      m.cap = { x0: sx - cw, x1: sx + cw, top: gy - h - chh };
+      if (m.kind.glow) {
+        const g = x.createRadialGradient(sx, gy - h - chh / 2, 0, sx, gy - h - chh / 2, cw * 2.6);
+        g.addColorStop(0, m.kind.light + "55"); g.addColorStop(1, m.kind.light + "00");
+        x.globalAlpha = .55 + .45 * Math.sin(t * 4 + m.phase) * A.high * act + .3 * A.high * act;
+        x.fillStyle = g; x.fillRect(sx - cw * 3, gy - h - chh - cw * 2, cw * 6, cw * 5);
+        x.globalAlpha = 1;
+      }
+      const sw = Math.max(2, Math.round(cw * .45));
+      x.fillStyle = m.kind.stem; x.fillRect(sx - (sw >> 1), gy - h, sw, h + 1);
+      x.fillStyle = "#00000033"; x.fillRect(sx - (sw >> 1), gy - h, 1, h + 1);
+      for (let r = 0; r < chh; r++) {                              // шляпка рядами пикселей
+        const k = 1 - r / chh, w = Math.round(cw * Math.sqrt(1 - k * k * .85));
+        x.fillStyle = r < 2 ? m.kind.light : m.kind.cap;
+        x.fillRect(sx - w, gy - h - chh + r + 1, w * 2, 1);
+      }
+      x.fillStyle = m.kind.light;
+      if (cw > 6) { x.fillRect(sx - (cw >> 1), gy - h - chh + 2, 2, 1); x.fillRect(sx + (cw >> 2), gy - h - chh + 3, 2, 1); }
+    }
+
+    // Склон
+    for (let c = 0; c < VW; c++) {
+      const gy = Math.round(this.groundY(this.wx + c));
+      x.fillStyle = "#dbe7fb"; x.fillRect(c, gy, 1, VH - gy);
+      x.fillStyle = "#b4c6e8"; x.fillRect(c, gy + 4 + ((c + Math.floor(this.wx)) % 7 === 0 ? 1 : 0), 1, 1);
+      x.fillStyle = "#ffffff"; x.fillRect(c, gy, 1, 1);
+    }
+
+    // Физика райдера: прыжки, приземление, отскок от шляпок
+    const gravity = 330;
+    const prevY = this.y;
+    if (this.y > 0 || this.vy > 0) { this.vy -= gravity * dt; this.y += this.vy * dt; }
+    const ground = this.groundY(rwx);
+    for (const m of this.shrooms) {
+      if (!m.cap || rx + 9 < m.cap.x0 || rx + 2 > m.cap.x1) continue;
+      const capH = ground - m.cap.top;                            // высота шляпки над склоном в точке райдера
+      if (this.vy < 0 && prevY >= capH && this.y < capH) {          // упал на шляпку: она пружинит
+        this.y = capH; this.vy = Math.min(165, 105 + capH * 1.2 + 30 * A.bass); m.squash = 1; this.bounces++;
+        for (let k = 0; k < 8; k++) this.spray.push({ x: rx + 6, y: ground - capH, vx: rnd(-40, 40), vy: rnd(-60, -20), life: 1, c: m.kind.light });
+      } else if (this.y <= 0 && m.cap.x0 > rx + 4 && m.cap.x0 < rx + 26) {   // гриб прямо по курсу: перепрыгнуть
+        this.vy = Math.min(165, Math.sqrt(2 * gravity * (capH + 6))); this.y = .01; this.jumps++;
+      }
+    }
+    if (this.y <= 0 && prevY > 0) {                                 // приземление
+      this.crouch = .18;
+      for (let k = 0; k < 10; k++) this.spray.push({ x: rx + 6, y: ground, vx: rnd(-50, 10), vy: rnd(-50, -10), life: 1, c: "#ffffff" });
+    }
+    if (this.y <= 0) { this.y = 0; this.vy = 0; this.spinning = false; }
+    this.y = Math.min(this.y, ground - 20);                          // райдер всегда остаётся в кадре
+    this.crouch = Math.max(0, this.crouch - dt);
+    if (this.spinning) this.spin += dt * Math.PI * 2 * 1.6;
+
+    if (this.y === 0 && speed > 0 && Math.random() < speed * dt * .5) this.spray.push({ x: rx + 1, y: ground, vx: rnd(-30, -10), vy: rnd(-25, -5), life: 1, c: "#ffffff" });
+    for (let i = this.spray.length - 1; i >= 0; i--) {
+      const p = this.spray[i];
+      p.life -= dt * 1.6; if (p.life <= 0) { this.spray.splice(i, 1); continue; }
+      p.vy += 120 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+      x.globalAlpha = p.life; x.fillStyle = p.c; x.fillRect(Math.round(p.x), Math.round(p.y), 1, 1);
+    }
+    x.globalAlpha = 1;
+
+    // Сам райдер
+    const bob = this.y === 0 && speed === 0 ? Math.round(Math.sin(t * 2) * .6) : 0;
+    const pose = this.crouch > 0 || (this.y === 0 && A.beat > .6 && act > .3) ? "crouch" : this.y > 0 ? "air" : "ride";
+    const rows = RIDER[pose].length;
+    const feet = Math.round(ground - this.y) + bob;
+    const tilt = this.y === 0 ? Math.atan2(this.groundY(rwx + 6) - this.groundY(rwx - 6), 12) : 0;
+    x.save();
+    x.translate(rx + 6, feet - 6);
+    x.rotate(tilt + (this.spinning ? -this.spin : 0));
+    x.translate(-6, -(rows - 6));
+    this.sprite(x, pose, 0, 0);
+    x.fillStyle = "#ff2f5e"; x.fillRect(-2, rows, 16, 2);           // доска
+    x.fillStyle = "#ffd23f"; x.fillRect(2, rows, 8, 1);
+    x.fillStyle = "#ff2f5e"; x.fillRect(-3, rows - 1, 1, 1); x.fillRect(14, rows - 1, 1, 1);
+    x.restore();
+
+    // Снег идёт всегда, в тишине медленно
+    x.fillStyle = "#ffffff";
+    for (const f of this.flakes) {
+      f.y += f.v * dt * (.35 + act * .8); f.x -= (speed * .3 + 3) * dt;
+      if (f.y > VH) { f.y = 0; f.x = Math.random() * VW; } if (f.x < 0) f.x += VW;
+      x.globalAlpha = .7; x.fillRect(Math.round(f.x), Math.round(f.y), 1, 1);
+    }
+    x.globalAlpha = 1;
+
+    main.imageSmoothingEnabled = false;
+    main.drawImage(this.low, 0, 0, W, H);
+    main.imageSmoothingEnabled = true;
+  },
+};
+
 /* ───────────── Вид 6: краски (симуляция жидкости) ───────────── */
 // Пигменты хранятся как поглощение света: синий и жёлтый вместе дают зелёный, как на настоящей палитре
 const PIGMENTS = [
@@ -1460,7 +1657,7 @@ paint.canvas.addEventListener("webglcontextrestored", () => paint.init());
 /* ───────────── Смена видов ───────────── */
 if (stage.init()) shaderViews.forEach(v => v.init());
 paint.init();
-const views = [bars, ring, light, space, bacteria, paint, fire, snow, dopamine].filter(v => v.ok !== false);
+const views = [bars, ring, light, space, bacteria, paint, fire, snow, dopamine, rider].filter(v => v.ok !== false);
 const remember = {
   get() { try { return parseInt(localStorage.getItem("eq-view"), 10) || 0; } catch { return 0; } },
   set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },
@@ -1625,6 +1822,7 @@ addEventListener("keydown", e => {
   if (k === "ArrowRight") show(cur + 1, true);
   else if (k === "ArrowLeft") show(cur - 1, true);
   else if (/^[1-9]$/.test(k) && +k <= views.length) show(+k - 1, true);
+  else if (k === "0" && views.length >= 10) show(9, true);
   else if (e.code === "KeyF") toggleFull();
   else if (k === "ArrowUp") shiftVariant(1);
   else if (k === "ArrowDown") shiftVariant(-1);

@@ -317,7 +317,13 @@ const ring = {
   drawHole(dt, t) {
     const S = Math.min(W, H), cx = W / 2, cy = H / 2, x = layer.x, act = A.act;
     if (!this.stars) this.stars = Array.from({ length: 170 }, () => ({ x: Math.random(), y: Math.random(), r: rnd(.4, 1.3), a: rnd(.15, .7), p: rnd(0, 7) }));
-    const R = S * .125 * (1 + A.bass * .07 * act);               // горизонт событий
+    // На громких местах удары раздувают горизонт и кольца сильнее
+    const loud = clamp((A.energy - .38) / .3) * act;
+    this.boost = (this.boost || 0) + (loud - (this.boost || 0)) * follow(dt, loud > (this.boost || 0) ? .2 : 1.1);
+    this.kick = (this.kick || 0) * Math.exp(-dt / .2);
+    if (A.beats !== this.seenKick) { this.seenKick = A.beats; this.kick = Math.max(this.kick, (.35 + A.bass * .65) * act * calm); }
+    const pulse = this.kick * (.05 + .17 * this.boost);
+    const R = S * .125 * (1 + A.bass * .07 * act + pulse);       // горизонт событий
     const tilt = .19 + .025 * Math.sin(t * .17);
     this.spin += dt * (.12 + 1.5 * A.energy * act);
 
@@ -346,7 +352,7 @@ const ring = {
         x.beginPath();
         for (let k = 0; k <= 90; k++) {
           const a = (front ? 0 : Math.PI) + k / 90 * Math.PI;
-          const rr = r * (1 + level * .07 * Math.sin(a * (3 + i % 4) + this.spin * (2 + i * .3)));
+          const rr = r * (1 + pulse * .6 + level * (.07 + this.boost * .08) * Math.sin(a * (3 + i % 4) + this.spin * (2 + i * .3)));
           const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr * tilt;
           k ? x.lineTo(px, py) : x.moveTo(px, py);
         }
@@ -369,12 +375,12 @@ const ring = {
     x.globalAlpha = 1; x.fillStyle = "#000";
     x.beginPath(); x.arc(cx, cy, R, 0, 7); x.fill();
     x.lineWidth = Math.max(1.5, 2.2 * dpr);
-    x.globalAlpha = clamp(.8 + A.beat * .5 * calm);
+    x.globalAlpha = clamp(.8 + A.beat * .5 * calm + this.kick * this.boost);
     x.beginPath(); x.arc(cx, cy, R, 0, 7); x.stroke();
 
     // Фотонные кольца: контуры спектра вокруг горизонта, бас внизу, верха наверху
     for (let j = 0; j < 3; j++) {
-      const base = R * (1.05 + j * .05), amp = S * (.06 - j * .016);
+      const base = R * (1.05 + j * .05), amp = S * (.06 - j * .016) * (1 + this.boost * .7);
       x.lineWidth = Math.max(1, (1.6 - j * .4) * dpr);
       x.globalAlpha = .85 - j * .25;
       x.beginPath();
@@ -668,7 +674,7 @@ const space = shaderView({
     }
     jump.flash *= Math.exp(-dt / .22);
   },
-  speed: () => .025 + A.act * (.1 + 1.05 * A.energy + A.beat * .35 * calm) + jump.boost * jump.boost * 2.4 * calm,
+  speed: () => clamp((A.act - .05) / .95) * (.1 + 1.05 * A.energy + A.beat * .35 * calm) + jump.boost * jump.boost * 2.4 * calm,   // без звука полёт стоит
   extra: () => ({ flash: jump.flash * calm }),
 });
 

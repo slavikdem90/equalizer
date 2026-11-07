@@ -1773,6 +1773,7 @@ const cyborg = {
     try {
       const mod = await import("./skull.js");
       this.impl = await mod.createSkull(this.canvas, A, calm, k => flash($("name"), `Киборг загружается… ${Math.round(k * 100)}%`, 8000));
+      this.impl.setVariant(this.variant);
       if (views[cur] === this) flash($("name"), "Киборг", 1400);
     } catch (e) {
       console.error(e);
@@ -1781,6 +1782,8 @@ const cyborg = {
     }
     this.loading = false;
   },
+  variants: ["цветной", "ЧБ, красные лазеры"], variant: 0,
+  onVariant() { if (this.impl) this.impl.setVariant(this.variant); },
   enter() { if (!this.impl && !this.loading && !this.failed) this.load(); },
   draw(dt, t) { if (this.impl) this.impl.draw(dt, t); },
 };

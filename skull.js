@@ -77,6 +77,14 @@ export async function createSkull(canvas, A, calm, onProgress) {
   const head = new THREE.Group();
   scene.add(head);
 
+  // Палитры вариантов: цветной и ЧБ с красными лазерами
+  const grayU = { value: 0 };
+  const PALETTES = [
+    { gray: 0, lens: [0.15, 0.7, 0.8], core: [1.2, 2.4, 2.6], halo: [0.08, 0.45, 0.7], light: 0x40e8ff, flash: 0x9ff4ff, rimC: 0x2fd6ff, rimM: 0xff2fa0, key: 0xfff1e0, smoke: [0.5, 0.6, 0.68], smokeFire: [0, 0.25, 0.3] },
+    { gray: 1, lens: [0.9, 0.06, 0.04], core: [3.2, 0.35, 0.25], halo: [0.75, 0.03, 0.02], light: 0xff2a1a, flash: 0xff5a40, rimC: 0xd8dde6, rimM: 0x9aa0aa, key: 0xffffff, smoke: [0.58, 0.58, 0.58], smokeFire: [0.45, 0.02, 0.0] },
+  ];
+  let pal = PALETTES[0];
+
   // Модель
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
@@ -90,6 +98,11 @@ export async function createSkull(canvas, A, calm, onProgress) {
     const map = o.material.map;
     if (map) { map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = renderer.capabilities.getMaxAnisotropy(); }
     o.material = new THREE.MeshStandardMaterial({ map, roughness: 0.42, metalness: 0.28, envMapIntensity: 0.35 });
+    o.material.onBeforeCompile = sh => {                       // ЧБ-вариант: текстура обесцвечивается прямо в материале
+      sh.uniforms.uGray = grayU;
+      sh.fragmentShader = "uniform float uGray;\n" + sh.fragmentShader.replace("#include <map_fragment>",
+        "#include <map_fragment>\n diffuseColor.rgb = mix(diffuseColor.rgb, vec3(dot(diffuseColor.rgb, vec3(.299, .587, .114))) * 1.05, uGray);");
+    };
   });
   const box = new THREE.Box3().setFromObject(model);
   model.position.sub(box.getCenter(new THREE.Vector3()));
@@ -227,7 +240,8 @@ export async function createSkull(canvas, A, calm, onProgress) {
     haloMat.opacity = clamp(fire * 0.5);
 
     glow += ((0.25 + 0.6 * act * (0.4 + A.high)) - glow) * follow(dt, 0.15);
-    lensMat.color.setRGB(0.15 + 0.6 * (glow + fire), 0.7 + 1.4 * (glow + fire), 0.8 + 1.5 * (glow + fire));
+    const lk = 1 + 2 * (glow + fire);
+    lensMat.color.setRGB(pal.lens[0] * lk, pal.lens[1] * lk, pal.lens[2] * lk);
     eyeLights.forEach(l => { l.intensity = 0.05 + 1.4 * fire + 0.15 * glow; });
     flashes.forEach(f => { const s = 0.04 + 0.16 * fire; f.scale.set(s, s, s); f.material.opacity = clamp(0.15 * glow + 0.8 * fire); });
 
@@ -256,7 +270,7 @@ export async function createSkull(canvas, A, calm, onProgress) {
       p.s.scale.set(size, size, size);
       p.s.material.rotation += p.spin * dt;
       p.s.material.opacity = 0.55 * Math.sin(Math.PI * Math.min(k * 1.6, 1)) * (1 - k);
-      p.s.material.color.setRGB(0.5 * smokeTint, 0.6 * smokeTint + 0.25 * fire, 0.68 * smokeTint + 0.3 * fire);
+      p.s.material.color.setRGB(pal.smoke[0] * smokeTint + pal.smokeFire[0] * fire, pal.smoke[1] * smokeTint + pal.smokeFire[1] * fire, pal.smoke[2] * smokeTint + pal.smokeFire[2] * fire);
     }
 
     // Камера: лёгкое дрожание на громких местах
@@ -274,5 +288,15 @@ export async function createSkull(canvas, A, calm, onProgress) {
     composer.render(dt);
   }
 
-  return { draw, resize, get pixelRatio() { return pixelRatio; }, renderer };
+  function setVariant(i) {
+    pal = PALETTES[i] || PALETTES[0];
+    grayU.value = pal.gray;
+    coreMat.color.setRGB(...pal.core);
+    haloMat.color.setRGB(...pal.halo);
+    eyeLights.forEach(l => l.color.set(pal.light));
+    flashes.forEach(f => f.material.color.set(pal.flash));
+    rimC.color.set(pal.rimC); rimM.color.set(pal.rimM); key.color.set(pal.key);
+  }
+
+  return { draw, resize, setVariant, get pixelRatio() { return pixelRatio; }, renderer };
 }

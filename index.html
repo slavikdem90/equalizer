@@ -81,7 +81,7 @@
 </section>
 
 <div id="name" class="hud" role="status"></div>
-<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>F</kbd> весь экран</div>
+<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>9</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>F</kbd> весь экран</div>
 
 <script>
 "use strict";
@@ -1145,92 +1145,7 @@ const bacteria = {
   },
 };
 
-/* ───────────── Вид 8: снег ───────────── */
-const flakeSprite = (() => {
-  const c = document.createElement("canvas"); c.width = c.height = 64;
-  const x = c.getContext("2d"), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
-  g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(.35, "rgba(235,244,255,.75)"); g.addColorStop(1, "rgba(220,235,255,0)");
-  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
-  return c;
-})();
-const snow = {
-  title: "Снег",
-  canvas: c2d,
-  flakes: [], drift: new Float32Array(160), wind: 0, gust: 0, seen: 0,
-  build() {
-    for (let i = 0; i < 1100; i++) {
-      const z = Math.pow(Math.random(), 1.8);                   // большинство снежинок далеко
-      this.flakes.push({ x: Math.random(), y: Math.random(), z, p: rnd(0, 7), f: rnd(.5, 1.6), tw: rnd(0, 7) });
-    }
-  },
-  enter() { this.seen = A.beats; },
-  draw(dt, t) {
-    if (!this.flakes.length) this.build();
-    const x = layer.x, S = Math.min(W, H), act = A.act;
-    // Ветер от баса, на ударах порыв; сила звука задаёт густоту и скорость снегопада
-    if (A.beats !== this.seen) { this.seen = A.beats; this.gust += (.25 + A.bass * .9) * act * calm; }
-    this.gust *= Math.exp(-dt * 1.4);
-    const windTo = (Math.sin(t * .07) * .5 + A.bass * .9 * act) * (Math.sin(t * .031) > -.3 ? 1 : -1);
-    this.wind += (windTo - this.wind) * follow(dt, 1.2);
-    const wind = this.wind + this.gust, fall = .35 + act * (.25 + A.energy * 1.6);
-    const density = .35 + .65 * clamp(act * A.energy * 1.7);
-
-    const sky = main.createLinearGradient(0, 0, 0, H);
-    sky.addColorStop(0, "#03060d"); sky.addColorStop(.7, "#0a1426"); sky.addColorStop(1, "#13213a");
-    main.fillStyle = sky; main.fillRect(0, 0, W, H);
-    const moon = main.createRadialGradient(W * .78, H * .18, 0, W * .78, H * .18, S * .42);
-    const glow = .07 + A.bass * .1 * act;
-    moon.addColorStop(0, `rgba(190,215,255,${glow})`); moon.addColorStop(1, "rgba(190,215,255,0)");
-    main.fillStyle = moon; main.fillRect(0, 0, W, H);
-
-    x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "source-over"; x.globalAlpha = 1;
-    x.clearRect(0, 0, W, H);
-
-    // Сугробы повторяют спектр: бас слева, верха справа
-    const n = this.drift.length;
-    for (let i = 0; i < n; i++) {
-      let sum = 0, k = 0;
-      for (let j = -6; j <= 6; j++) { sum += sample(clamp((i + j * 1.6) / n)); k++; }
-      const target = .045 + .22 * (sum / k) * act + .012 * Math.sin(i * .21 + t * .15);
-      this.drift[i] += (target - this.drift[i]) * follow(dt, target > this.drift[i] ? .12 : .9);
-    }
-    const groundY = i => H - this.drift[Math.min(n - 1, Math.max(0, i))] * H;
-
-    const N = this.flakes.length;
-    for (let i = 0; i < N; i++) {
-      const f = this.flakes[i], depth = .25 + f.z * .75;
-      f.y += dt * fall * (.05 + depth * .16) * f.f;
-      f.x += dt * (wind * (.03 + depth * .16) + Math.sin(t * f.f * .9 + f.p) * .012 * depth);
-      if (f.x > 1.05) f.x -= 1.1; if (f.x < -.05) f.x += 1.1;
-      const px = f.x * W, py = f.y * H;
-      if (f.y > 1.02 || (f.z > .5 && py > groundY(Math.floor(f.x * n)))) { f.y = -.03; f.x = Math.random(); continue; }
-      const show = clamp((density * N - i) / 60);
-      if (show <= 0) continue;
-      const r = (.6 + depth * depth * 5.5) * dpr * S / 900;
-      const sparkle = 1 + Math.max(0, Math.sin(t * 6 + f.tw)) * A.high * act * 1.4;
-      x.globalAlpha = clamp((.25 + depth * .7) * show * sparkle);
-      if (r < 1.6 * dpr) x.fillRect(px - r, py - r, r * 2, r * 2);
-      else x.drawImage(flakeSprite, px - r * 2, py - r * 2, r * 4, r * 4);
-    }
-
-    // Сугроб с освещённым гребнем
-    x.globalAlpha = 1;
-    const ground = x.createLinearGradient(0, H * .7, 0, H);
-    ground.addColorStop(0, "#9fb4d2"); ground.addColorStop(1, "#2e4064");
-    x.fillStyle = ground;
-    x.beginPath(); x.moveTo(0, H);
-    for (let i = 0; i < n; i++) x.lineTo(i / (n - 1) * W, groundY(i));
-    x.lineTo(W, H); x.closePath(); x.fill();
-    x.strokeStyle = "#eef5ff"; x.lineWidth = Math.max(1, 1.5 * dpr); x.globalAlpha = .55 + A.high * .4 * act;
-    x.beginPath();
-    for (let i = 0; i < n; i++) { const px = i / (n - 1) * W; i ? x.lineTo(px, groundY(i)) : x.moveTo(px, groundY(i)); }
-    x.stroke();
-    x.globalAlpha = 1;
-    present(.35 + A.energy * .2);
-  },
-};
-
-/* ───────────── Вид 10: райдер и грибы (пиксельная графика) ───────────── */
+/* ───────────── Вид 9: райдер и грибы (пиксельная графика) ───────────── */
 // Свой герой: сноубордист в оранжевой шапке и маске. Спрайты задаются строками, одна буква — один пиксель
 const RIDER_COLORS = { K: "#1a1420", O: "#ff7a2e", Y: "#ffb35a", S: "#f2c39a", G: "#2fd6ff", J: "#1f8a8a", j: "#145e5e", P: "#2a3550", B: "#0f0c16", W: "#e9f3ff" };
 const RIDER = {
@@ -1657,7 +1572,7 @@ paint.canvas.addEventListener("webglcontextrestored", () => paint.init());
 /* ───────────── Смена видов ───────────── */
 if (stage.init()) shaderViews.forEach(v => v.init());
 paint.init();
-const views = [bars, ring, light, space, bacteria, paint, fire, snow, dopamine, rider].filter(v => v.ok !== false);
+const views = [bars, ring, light, space, bacteria, paint, fire, dopamine, rider].filter(v => v.ok !== false);
 const remember = {
   get() { try { return parseInt(localStorage.getItem("eq-view"), 10) || 0; } catch { return 0; } },
   set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },
@@ -1822,7 +1737,6 @@ addEventListener("keydown", e => {
   if (k === "ArrowRight") show(cur + 1, true);
   else if (k === "ArrowLeft") show(cur - 1, true);
   else if (/^[1-9]$/.test(k) && +k <= views.length) show(+k - 1, true);
-  else if (k === "0" && views.length >= 10) show(9, true);
   else if (e.code === "KeyF") toggleFull();
   else if (k === "ArrowUp") shiftVariant(1);
   else if (k === "ArrowDown") shiftVariant(-1);

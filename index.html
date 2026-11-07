@@ -73,7 +73,7 @@
 </section>
 
 <div id="name" class="hud" role="status"></div>
-<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>6</kbd> выбор · <kbd>F</kbd> весь экран</div>
+<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>7</kbd> выбор · <kbd>F</kbd> весь экран</div>
 
 <script>
 "use strict";
@@ -446,7 +446,7 @@ const LIGHT_PALETTES = [
   [[.00, .28, .24], [.14, .78, .42], [.96, .90, .30]],   // лес
   [[.10, .08, .52], [.68, .16, .92], [1, .50, .68]],     // орхидея
 ];
-function shaderView({ title, frag, scale, speed, palettes, paletteSpeed }) {
+function shaderView({ title, frag, scale, speed, palettes, paletteSpeed, before }) {
   return {
     title, canvas: cgl, ok: false, scale, flow: 40, hue: 0, ring: 0, seen: 0, slow: 0, slowFor: 0, pr: null, u: null,
     init() {
@@ -479,6 +479,7 @@ function shaderView({ title, frag, scale, speed, palettes, paletteSpeed }) {
       gl.uniform1f(u.bass, A.bass * A.act); gl.uniform1f(u.mid, A.mid * A.act); gl.uniform1f(u.high, A.high * A.act);
       gl.uniform1f(u.beat, A.beat * A.act * calm); gl.uniform1f(u.ring, this.ring); gl.uniform1f(u.act, A.act);
       gl.uniform1f(u.streak, clamp(v * 1.5));
+      if (before) before(gl);
       if (palettes) {   // палитры плавно перетекают одна в другую
         this.hue = (this.hue + dt * paletteSpeed()) % palettes.length;
         const i = Math.floor(this.hue), k = this.hue - i, e = k * k * (3 - 2 * k), A0 = palettes[i], B0 = palettes[(i + 1) % palettes.length];
@@ -510,200 +511,282 @@ void main(){
   vec2 p = (gl_FragCoord.xy - .5 * u_res) / min(u_res.x, u_res.y);
   float d = length(p);
 
-  // Туманности: цвет каждой зависит от своей части спектра
-  float drift = u_t * .012;
-  vec2 n = p * 1.35 * (1. - .08 * u_bass);
+  // Фон почти чёрный, туманности едва проступают только на музыке
+  float drift = u_t * .05;
+  vec2 n = p * 1.35;
   float w = fbm(n + drift);
   float cloudA = fbm(n + 2.2 * w + vec2(3.1, -drift));
   float cloudB = fbm(n * 1.6 + 1.7 * w + vec2(7.4, drift * .7));
-  vec3 c = vec3(.006, .008, .032);
-  c += vec3(.05, .05, .24) * smoothstep(.28, .7, w);
-  c += vec3(.40, .11, .70) * smoothstep(.42, .78, cloudA) * (.3 + u_mid * 1.15);
-  c += vec3(.95, .30, .10) * smoothstep(.52, .82, cloudB) * (.1 + u_bass * 1.05);
-  c += vec3(.08, .62, .76) * smoothstep(.5, .8, cloudA * cloudB * 2.1) * (.08 + u_high * .95);
+  vec3 c = vec3(.001, .001, .004);
+  c += vec3(.36, .12, .68) * smoothstep(.55, .85, cloudA) * (.008 + u_mid * .15);
+  c += vec3(.90, .30, .10) * smoothstep(.6, .88, cloudB) * u_bass * .12;
 
-  // Звёзды в полярной сетке: логарифм радиуса даёт честный полёт из одной точки
-  float ang = atan(p.y, p.x) / 6.28318, lr = log(d + .001);
-  for (int i = 0; i < 4; i++) {
-    float fi = float(i), nc = 34. + fi * 24., k = 2.1 + fi * .9;
-    vec2 g = vec2(ang * nc + fi * 11.3, lr * k - u_t * (1. + fi * .28) + fi * 7.1);
+  // Звёзды: случайные точки в нескольких слоях глубины, каждый слой летит на зрителя
+  vec2 dir = p / (d + .001);
+  for (int i = 0; i < 6; i++) {
+    float fi = float(i), z = fi / 6. + u_t * .3, depth = fract(z), seed = floor(z) + fi * 17.;
+    float sc = 24. * exp(-depth * 2.2);
+    vec2 g = p * sc + vec2(seed * 13.71, seed * 7.13);
     vec2 id = floor(g), f = fract(g);
-    id.x = mod(id.x, nc);
-    float h = hash(id + fi * 37.), h2 = hash(id + fi * 91. + 3.);
-    if (h > .5) {
+    float h = hash(id + seed), h2 = hash(id + seed + 41.7);
+    if (h > .62) {
       vec2 q = f - vec2(.25 + .5 * h2, .25 + .5 * fract(h2 * 7.3));
-      q.x *= 6.283 * k / nc;
-      q.y /= 1. + u_streak * 3.;
-      float r = (.02 + .036 * h2 * h2) / (1. + d * 1.7);       // иначе у края звёзды разрастаются в пятна
-      float star = smoothstep(r, r * .45, length(q));
-      vec3 tint = mix(vec3(.72, .84, 1.), vec3(1., .86, .68), step(.72, h));
-      star *= smoothstep(.015, .22, d) * (.5 + .5 * sin(u_t * 9. + h * 40.) * u_high + .3 * fi / 3.);
-      c += tint * star * (1.05 + u_high * 1.2);
+      q = vec2(dot(q, dir) / (1. + u_streak * 3.), dot(q, vec2(-dir.y, dir.x)));   // на скорости вытягиваются от центра
+      float r = .018 + .022 * fract(h2 * 3.7);
+      float star = smoothstep(r, r * .3, length(q));
+      float fade = smoothstep(0., .3, depth) * smoothstep(1., .84, depth);
+      vec3 tint = mix(vec3(.74, .85, 1.), vec3(1., .88, .72), step(.82, h));
+      c += tint * star * fade * (.75 + .6 * sin(u_t * 30. + h * 40.) * u_high + u_high * .9);
     }
   }
-
-  c += vec3(1., .74, .5) * exp(-d * 8.5) * (.1 + u_bass * .85);                  // сердце, откуда летят звёзды
-  c += vec3(.42, .6, 1.) * exp(-52. * (d - u_ring) * (d - u_ring)) * u_beat * .5; // волна от удара
-  c *= mix(.72, 1., u_act);
-  c *= 1. - .35 * smoothstep(.5, 1.2, d);
+  c += vec3(.42, .6, 1.) * exp(-52. * (d - u_ring) * (d - u_ring)) * u_beat * .12;  // еле заметная волна от удара
   c = c * (1. + c * .2) / (1. + c * .42);
   c += (hash(gl_FragCoord.xy + u_t) - .5) / 255.;
   gl_FragColor = vec4(c, 1.);
 }`;
 const space = shaderView({ title: "Космос", frag: SPACE, scale: 1, speed: () => .025 + A.act * (.1 + 1.05 * A.energy + A.beat * .35 * calm) });
 
-cgl.addEventListener("webglcontextlost", e => { e.preventDefault(); light.ok = space.ok = false; });
-cgl.addEventListener("webglcontextrestored", () => { stage.gl = null; if (stage.init()) { light.init(); space.init(); } });
+/* ───────────── Вид 7: огонь ───────────── */
+const FIRE = `precision highp float;
+uniform vec2 u_res; uniform float u_t, u_beat, u_high, u_act; uniform sampler2D u_spec;
+const mat2 ROT = mat2(.8, .6, -.6, .8);
+float hash(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.23); return fract(p.x * p.y); }
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p), u = f * f * (3. - 2. * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+float fbm(vec2 p){
+  float a = .5, s = 0.;
+  for (int i = 0; i < 5; i++) { s += a * noise(p); p = ROT * p * 2.03 + 17.; a *= .5; }
+  return s;
+}
+float band(float x){   // спектр зеркально: бас в центре, верха по краям
+  float v = 0.;
+  for (int i = -2; i <= 2; i++) v += texture2D(u_spec, vec2(clamp(x + float(i) * .03, .01, .99), .5)).r;
+  return v * .2;
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res;
+  float asp = u_res.x / u_res.y, y = uv.y;
+  vec2 p = vec2((uv.x - .5) * asp, y);
+  float w1 = fbm(p * vec2(1.7, 1.05) - vec2(0., u_t * 1.15));
+  float w2 = fbm(p * vec2(2.9, 1.6) + vec2(5.2, -u_t * 1.95) + w1 * 1.5);
+  float x = clamp(abs(uv.x - .5) * 2. + ((w1 - .5) * .46 + (w2 - .5) * .3) * y, 0., 1.);
+  float s = band(x * .9 + .03);
+  float h = .1 + u_act * (.1 + .86 * s + .16 * u_beat);        // высота пламени над этой точкой
+  float f = 1. - y / h;
+  f += (w2 - .5) * (1.15 + y * 1.1);
+  float tongue = 1. - abs(2. * w2 - 1.);                       // языки с тёмными разрывами внутри
+  f = smoothstep(-.12, 1.4, f) * (.42 + .86 * tongue * tongue) * mix(.72, 1., u_act);
 
-/* ───────────── Вид 5: молекулы ───────────── */
-// Цвета атомов по обозначениям из химии (модели CPK), координаты в ангстремах
-const ELEMENTS = {
-  C: { r: .72, bond: "#6f7a8c", stops: ["#c4cedc", "#4a5364", "#10141c"] },
-  H: { r: .42, bond: "#cdd6e2", stops: ["#ffffff", "#ced8e6", "#5a657e"] },
-  O: { r: .66, bond: "#e0453d", stops: ["#ffb0a0", "#e6332d", "#4d0712"] },
-  N: { r: .66, bond: "#4a78f0", stops: ["#bcd2ff", "#2f62ee", "#0b1856"] },
-};
-for (const e of Object.values(ELEMENTS)) {
-  const c = document.createElement("canvas"); c.width = c.height = 128;
-  const x = c.getContext("2d");
-  const g = x.createRadialGradient(46, 42, 3, 64, 64, 63);
-  g.addColorStop(0, e.stops[0]); g.addColorStop(.42, e.stops[1]); g.addColorStop(1, e.stops[2]);
-  x.fillStyle = g; x.beginPath(); x.arc(64, 64, 63, 0, 7); x.fill();
-  e.sprite = c;
-}
-function molecule(list) {
-  const atoms = list.map(([el, x, y, z]) => ({ el, x, y, z: z || 0 }));
-  const bonds = [];
-  atoms.forEach((a, i) => atoms.forEach((b, j) => {
-    if (j > i && Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) < (a.el === "H" || b.el === "H" ? 1.25 : 1.6)) bonds.push([i, j]);
-  }));
-  return { atoms, bonds };
-}
-function aromatic(centers) {   // бензольные кольца: углероды и водороды снаружи
-  const cs = [];
-  for (const cx of centers) for (let i = 0; i < 6; i++) {
-    const a = Math.PI / 6 + i * Math.PI / 3, x = cx + 1.4 * Math.cos(a), y = 1.4 * Math.sin(a);
-    if (!cs.some(c => Math.hypot(c[0] - x, c[1] - y) < .1)) cs.push([x, y]);
-  }
-  const hs = [];
-  for (const c of cs) {
-    const near = cs.filter(o => o !== c && Math.hypot(o[0] - c[0], o[1] - c[1]) < 1.6);
-    if (near.length !== 2) continue;
-    const dx = c[0] - (near[0][0] + near[1][0]) / 2, dy = c[1] - (near[0][1] + near[1][1]) / 2, l = Math.hypot(dx, dy);
-    hs.push(["H", c[0] + dx / l * 1.08, c[1] + dy / l * 1.08]);
-  }
-  return molecule([...cs.map(c => ["C", c[0], c[1]]), ...hs]);
-}
-const tripod = Array.from({ length: 3 }, (_, i) => ["H", .94 * Math.cos(i * 2.094), .94 * Math.sin(i * 2.094), -.38]);
-const SPECIES = {
-  naphthalene: aromatic([-1.21, 1.21]),
-  benzene: aromatic([0]),
-  ethanol: molecule([["C", -1.25, -.2], ["C", 0, .55], ["O", 1.2, -.2], ["H", -1.25, -1.29], ["H", -2.1, .2, .75], ["H", -2.1, .2, -.75], ["H", 0, 1.2, .88], ["H", 0, 1.2, -.88], ["H", 2.1, .25]]),
-  methane: molecule([["C", 0, 0], ["H", .63, .63, .63], ["H", .63, -.63, -.63], ["H", -.63, .63, -.63], ["H", -.63, -.63, .63]]),
-  ammonia: molecule([["N", 0, 0, 0], ...tripod]),
-  dioxide: molecule([["O", -1.16, 0], ["C", 0, 0], ["O", 1.16, 0]]),
-  water: molecule([["O", 0, 0], ["H", .76, .59], ["H", -.76, .59]]),
-};
-const CAST = [["naphthalene", 2, .04], ["benzene", 3, .16], ["ethanol", 3, .32], ["methane", 4, .5], ["ammonia", 3, .62], ["dioxide", 3, .76], ["water", 6, .9]];
-const rnd = (a, b) => a + Math.random() * (b - a);
+  vec3 c = vec3(.006, .002, .004);
+  c = mix(c, vec3(.42, .025, .03), smoothstep(.03, .22, f));
+  c = mix(c, vec3(1., .26, .03), smoothstep(.17, .47, f));
+  c = mix(c, vec3(1., .68, .12), smoothstep(.42, .7, f));
+  c = mix(c, vec3(1., .9, .58), smoothstep(.68, .98, f));
 
-const molecules = {
-  title: "Молекулы",
-  canvas: c2d,
-  heat: 0, seen: 0, swarm: [], dust: [],
-  build() {
-    for (const [name, count, band] of CAST) for (let i = 0; i < count; i++) {
-      const a = rnd(0, 7), sp = rnd(.25, .6);
-      this.swarm.push({
-        m: SPECIES[name], band: clamp(band + rnd(-.04, .04)),
-        x: rnd(-1.5, 1.5), y: rnd(-.9, .9), z: rnd(-1, 1),
-        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, vz: rnd(-.25, .25), kx: 0, ky: 0,
-        ax: rnd(0, 7), ay: rnd(0, 7), az: rnd(0, 7), sx: rnd(-1, 1), sy: rnd(-1, 1), sz: rnd(-1, 1), phase: rnd(0, 7),
-      });
+  // Искры поднимаются над пламенем, больше всего на верхах
+  for (int i = 0; i < 2; i++) {
+    float fi = float(i), sc = 13. + fi * 9.;
+    vec2 g = vec2(p.x * sc + sin(p.y * 6. + u_t + fi) * .5, (p.y - u_t * (1.2 + fi * .5)) * sc * .55);
+    vec2 id = floor(g), q = fract(g) - .5;
+    float r = hash(id + fi * 13.);
+    if (r > .88) {
+      q -= (vec2(hash(id + 3.), hash(id + 9.)) - .5) * .6;
+      float life = smoothstep(1.05, .08, y);
+      c += vec3(1., .5, .12) * smoothstep(.09, .01, length(q)) * life * (.22 + u_high * 1.2) * u_act;
     }
-    for (let i = 0; i < 80; i++) this.dust.push({ x: rnd(-1.7, 1.7), y: rnd(-1, 1), a: rnd(.08, .32), r: rnd(.5, 1.5), p: rnd(0, 7) });
+  }
+  c += (hash(gl_FragCoord.xy + u_t) - .5) / 255.;
+  gl_FragColor = vec4(c, 1.);
+}`;
+let specTex = null;
+const specBytes = new Uint8Array(BANDS);
+const fire = shaderView({
+  title: "Огонь", frag: FIRE, scale: .75,
+  speed: () => .07 + A.act * (.26 + .85 * A.energy),
+  before(gl) {
+    if (!specTex) {
+      specTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, specTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+    for (let i = 0; i < BANDS; i++) {          // широкое сглаживание, чтобы пики частот не резали пламя на гребёнку
+      let sum = 0, n = 0;
+      for (let j = Math.max(0, i - 5); j <= Math.min(BANDS - 1, i + 5); j++) { sum += A.v[j]; n++; }
+      specBytes[i] = Math.round(clamp(sum / n) * 255);
+    }
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, specTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, BANDS, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, specBytes);
+  },
+});
+
+const shaderViews = [light, space, fire];
+cgl.addEventListener("webglcontextlost", e => { e.preventDefault(); shaderViews.forEach(v => { v.ok = false; }); specTex = null; });
+cgl.addEventListener("webglcontextrestored", () => { stage.gl = null; if (stage.init()) shaderViews.forEach(v => v.init()); });
+
+/* ───────────── Вид 5: бактерии ───────────── */
+const rnd = (a, b) => a + Math.random() * (b - a);
+// Три штамма, каждый питается своей частью спектра: палочки басом, вибрионы серединой, кокки верхами
+const STRAINS = [
+  { band: .12, len0: .034, len1: .072, w: .016, curve: .04, swim: .9, flag: true, rim: "#8df5d0", body: "#1c7a66", core: "#d8fff0" },
+  { band: .48, len0: .022, len1: .048, w: .012, curve: .28, swim: 1.3, flag: true, rim: "#ffd27a", body: "#8a5a16", core: "#fff0c2" },
+  { band: .82, len0: .003, len1: .02, w: .015, curve: 0, swim: .35, flag: false, rim: "#d8a6ff", body: "#5a2f92", core: "#f3e6ff" },
+];
+const bacteria = {
+  title: "Бактерии",
+  canvas: c2d,
+  cells: [], specks: [], heat: 0, vigor: 0, seen: 0, cull: 0,
+  spawn(st, x, y, a, g) {
+    this.cells.push({ st, x, y, a, g, kx: 0, ky: 0, phase: rnd(0, 7), bend: rnd(.5, 1) * (Math.random() < .5 ? -1 : 1), life: 1, dying: false });
+  },
+  build() {
+    [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2].forEach(i => this.spawn(STRAINS[i], rnd(-.45, .45), rnd(-.38, .38), rnd(0, 7), rnd(0, .7)));
+    for (let i = 0; i < 70; i++) this.specks.push({ x: rnd(-1.1, 1.1), y: rnd(-.55, .55), r: rnd(.5, 2.6), a: rnd(.04, .2), p: rnd(0, 7) });
   },
   enter() { this.seen = A.beats; },
   draw(dt, t) {
-    if (!this.swarm.length) this.build();
-    const x = layer.x, S = Math.min(W, H), cx = W / 2, cy = H / 2, ar = W / H;
-    // Температура раствора: от громкости зависит скорость и дрожь
-    const target = A.act * (.05 + A.energy * 1.15);
-    this.heat += (target - this.heat) * follow(dt, target > this.heat ? .08 : .9);
-    const heat = this.heat, pace = .012 + heat * .95;
+    if (!this.cells.length) this.build();
+    const x = layer.x, S = Math.min(W, H), cx = W / 2, cy = H / 2, hh = H / S / 2;
+    const field = .47 * Math.max(W, H) / S;                     // поле зрения окуляра
+    const list = this.cells;
 
-    const bg = main.createRadialGradient(cx, cy, 0, cx, cy, Math.hypot(W, H) * .58);
-    const lift = (A.bass * .55 + A.beat * .2 * calm) * A.act;
-    bg.addColorStop(0, `rgb(${10 + lift * 22},${48 + lift * 52},${58 + lift * 55})`);
-    bg.addColorStop(.6, "#06202a"); bg.addColorStop(1, "#020b11");
+    const heatTo = A.act * (.04 + A.energy * 1.15);
+    this.heat += (heatTo - this.heat) * follow(dt, heatTo > this.heat ? .08 : .9);
+    const heat = this.heat, pace = .03 + heat * 1.5;
+    // Сила звука задаёт размер колонии: громче значит больше клеток
+    const vigorTo = A.act * A.energy;
+    this.vigor += (vigorTo - this.vigor) * follow(dt, vigorTo > this.vigor ? .5 : 3.5);
+    const target = 14 + 330 * Math.pow(clamp(this.vigor * 1.25), 1.2);
+
+    const alive = list.reduce((n, c) => n + (c.dying ? 0 : 1), 0);
+    if (alive > target) {                                        // лишние клетки погибают постепенно, начиная со старых
+      this.cull += dt * ((alive - target) * .4 + 1);
+      for (let i = 0; i < list.length && this.cull >= 1; i++) if (!list[i].dying) { list[i].dying = true; this.cull--; }
+    } else this.cull = 0;
+
+    let beat = 0;
+    if (A.beats !== this.seen) { this.seen = A.beats; beat = A.bass * .1 * A.act; }
+
+    let room = alive;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const c = list[i], st = c.st, level = sample(st.band) * A.act;
+      if (c.dying) { c.life -= dt / .7; if (c.life <= 0) { list.splice(i, 1); continue; } }
+      else if (room < target) {
+        c.g += dt * A.act * (.04 + level * 1.15) + beat;
+        if (c.g >= 1) {                                          // бинарное деление
+          const L = st.len0 + (st.len1 - st.len0), ux = Math.cos(c.a), uy = Math.sin(c.a), push = .12 + level * .22;
+          this.spawn(st, c.x + ux * L * .3, c.y + uy * L * .3, c.a + rnd(-.3, .3), rnd(0, .08));
+          const n = list[list.length - 1];
+          n.kx = ux * push; n.ky = uy * push;
+          c.x -= ux * L * .3; c.y -= uy * L * .3; c.kx -= ux * push; c.ky -= uy * push;
+          c.g = rnd(0, .08); room++;
+        }
+      }
+      c.a += rnd(-1, 1) * dt * (1.2 + heat * 7);
+      const v = .018 * st.swim * pace;
+      c.x += (Math.cos(c.a) * v + c.kx + rnd(-.004, .004)) * dt * 1;
+      c.y += (Math.sin(c.a) * v + c.ky + rnd(-.004, .004)) * dt * 1;
+      c.kx *= Math.exp(-dt * 3); c.ky *= Math.exp(-dt * 3);
+      c.phase += dt * (2 + heat * 26);
+    }
+
+    // Клетки расталкивают друг друга, колония растёт как настоящая
+    const size = .07, grid = new Map();
+    for (const c of list) {
+      const k = Math.floor(c.x / size) * 4096 + Math.floor(c.y / size);
+      (grid.get(k) || grid.set(k, []).get(k)).push(c);
+    }
+    for (const c of list) {
+      const gx = Math.floor(c.x / size), gy = Math.floor(c.y / size), lenC = c.st.len0 + (c.st.len1 - c.st.len0) * c.g;
+      for (let ax = -1; ax <= 1; ax++) for (let ay = -1; ay <= 1; ay++) {
+        const near = grid.get((gx + ax) * 4096 + gy + ay);
+        if (!near) continue;
+        for (const o of near) {
+          if (o === c) continue;
+          const dx = c.x - o.x, dy = c.y - o.y, dd = Math.hypot(dx, dy) + 1e-4;
+          const lenO = o.st.len0 + (o.st.len1 - o.st.len0) * o.g, reach = .55 * (c.st.w + o.st.w) + .22 * (lenC + lenO);
+          if (dd < reach) { const f = (reach - dd) * .5 * Math.min(dt * 14, 1) / dd; c.x += dx * f; c.y += dy * f; }
+        }
+      }
+      const r = Math.hypot(c.x, c.y), lim = field - .05;
+      if (r > lim) { c.x *= lim / r; c.y *= lim / r; c.a += Math.PI * dt * 2; }
+      c.y = clamp(c.y, -hh + .02, hh - .02);
+    }
+
+    const bg = main.createRadialGradient(cx, cy, 0, cx, cy, field * S);
+    const lift = (A.bass * .5 + A.beat * .2 * calm) * A.act;
+    bg.addColorStop(0, `rgb(${15 + lift * 14},${32 + lift * 28},${28 + lift * 22})`);
+    bg.addColorStop(.75, "#0a1512"); bg.addColorStop(1, "#050a09");
     main.fillStyle = bg; main.fillRect(0, 0, W, H);
 
-    x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.globalCompositeOperation = "source-over";
+    x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = "source-over"; x.globalAlpha = 1;
     x.clearRect(0, 0, W, H);
 
-    // Мелкие частицы раствора, как в броуновском движении
-    x.fillStyle = "#9fe6df";
-    for (const d of this.dust) {
-      const j = heat * .018;
-      d.x += rnd(-j, j) + Math.sin(t * .13 + d.p) * dt * .012; d.y += rnd(-j, j) + Math.cos(t * .11 + d.p) * dt * .012;
-      if (Math.abs(d.x) > 1.75) d.x *= -.98; if (Math.abs(d.y) > 1.05) d.y *= -.98;
+    x.fillStyle = "#b6d8c8";                                     // частицы не в фокусе
+    for (const d of this.specks) {
       x.globalAlpha = d.a;
-      x.beginPath(); x.arc(cx + d.x * S * .5 * Math.min(ar, 1.75) / 1.75 * 1.75, cy + d.y * S * .5, d.r * dpr, 0, 7); x.fill();
+      x.beginPath();
+      x.arc(cx + (d.x + Math.sin(t * .09 + d.p) * .02) * S, cy + (d.y + Math.cos(t * .07 + d.p) * .02) * S, d.r * dpr, 0, 7);
+      x.fill();
     }
 
-    if (A.beats !== this.seen) {   // удар расталкивает молекулы от центра
-      this.seen = A.beats;
-      for (const m of this.swarm) {
-        const l = Math.hypot(m.x, m.y) + .2, f = (.04 + A.bass * .3) * calm / (l + .4);
-        m.kx += m.x / l * f; m.ky += m.y / l * f;
-      }
-    }
+    x.lineCap = "round"; x.lineJoin = "round";
+    const line = (ax, ay, bx, by, bend) => {
+      x.beginPath(); x.moveTo(ax, ay);
+      if (bend) x.quadraticCurveTo((ax + bx) / 2 + bend[0], (ay + by) / 2 + bend[1], bx, by); else x.lineTo(bx, by);
+      x.stroke();
+    };
+    for (const st of STRAINS) for (const c of list) {
+      if (c.st !== st) continue;
+      const level = sample(st.band) * A.act;
+      const px = cx + c.x * S, py = cy + c.y * S, len = (st.len0 + (st.len1 - st.len0) * c.g) * S, w = st.w * S * (1 + level * .16);
+      const ux = Math.cos(c.a), uy = Math.sin(c.a), ex = ux * len / 2, ey = uy * len / 2;
+      const ax = px - ex, ay = py - ey, bx = px + ex, by = py + ey, fade = c.dying ? c.life : 1;
 
-    const xb = ar * .98, yb = .98;
-    const order = this.swarm.slice().sort((a, b) => b.z - a.z);
-    for (const m of order) {
-      m.x += (m.vx * pace + m.kx) * dt; m.y += (m.vy * pace + m.ky) * dt; m.z += m.vz * pace * dt;
-      m.kx *= Math.exp(-dt * 2.4); m.ky *= Math.exp(-dt * 2.4);
-      m.kx -= m.x * dt * .12; m.ky -= m.y * dt * .12;      // мягко возвращает к центру, чтобы молекулы не жались к краям
-      if (m.x > xb) { m.x = xb; m.vx = -Math.abs(m.vx); m.kx = -Math.abs(m.kx) * .4; }
-      if (m.x < -xb) { m.x = -xb; m.vx = Math.abs(m.vx); m.kx = Math.abs(m.kx) * .4; }
-      if (m.y > yb) { m.y = yb; m.vy = -Math.abs(m.vy); m.ky = -Math.abs(m.ky) * .4; }
-      if (m.y < -yb) { m.y = -yb; m.vy = Math.abs(m.vy); m.ky = Math.abs(m.ky) * .4; }
-      if (Math.abs(m.z) > 1) { m.z = Math.sign(m.z); m.vz *= -1; }
-      m.ax += m.sx * pace * dt * 2.6; m.ay += m.sy * pace * dt * 2.6; m.az += m.sz * pace * dt * 2.6;
-
-      const level = sample(m.band);
-      const p = 1 / (1.3 + m.z * .42);                       // ближе значит крупнее и ярче
-      const unit = S * .035 * p * (1 + level * .2);
-      const ox = cx + m.x * S * .5, oy = cy + m.y * S * .5;
-      const ca = Math.cos(m.ax), sa = Math.sin(m.ax), cb = Math.cos(m.ay), sb = Math.sin(m.ay), cc = Math.cos(m.az), sc = Math.sin(m.az);
-      const pts = m.m.atoms.map((a, i) => {
-        const shake = 1 + level * .13 * Math.sin(t * 34 + m.phase + i * 2.1);   // связи дрожат на своей полосе
-        const x0 = a.x * shake, y0 = a.y * shake, z0 = a.z * shake;
-        const x1 = x0 * cb + z0 * sb, z1 = -x0 * sb + z0 * cb;
-        const y2 = y0 * ca - z1 * sa, z2 = y0 * sa + z1 * ca;
-        return { el: ELEMENTS[a.el], sx: ox + (x1 * cc - y2 * sc) * unit, sy: oy + (x1 * sc + y2 * cc) * unit, d: z2 };
-      });
-      x.globalAlpha = clamp(.25 + (1 - m.z) * .42, .25, 1);
-      const items = [];
-      m.m.bonds.forEach(b => items.push({ d: (pts[b[0]].d + pts[b[1]].d) / 2 - .01, b }));
-      pts.forEach(q => items.push({ d: q.d, q }));
-      items.sort((a, b) => a.d - b.d);
-      x.lineCap = "round"; x.lineWidth = Math.max(1, unit * .17);
-      const rSwell = 1 + level * .4;
-      for (const it of items) {
-        if (it.b) {
-          const a = pts[it.b[0]], b = pts[it.b[1]], mx = (a.sx + b.sx) / 2, my = (a.sy + b.sy) / 2;
-          x.strokeStyle = a.el.bond; x.beginPath(); x.moveTo(a.sx, a.sy); x.lineTo(mx, my); x.stroke();
-          x.strokeStyle = b.el.bond; x.beginPath(); x.moveTo(mx, my); x.lineTo(b.sx, b.sy); x.stroke();
-        } else {
-          const r = it.q.el.r * unit * rSwell;
-          x.drawImage(it.q.el.sprite, it.q.sx - r, it.q.sy - r, r * 2, r * 2);
+      if (st.flag) {                                             // жгутик
+        x.globalAlpha = .34 * fade; x.strokeStyle = st.rim; x.lineWidth = Math.max(1, S * .0012);
+        x.beginPath(); x.moveTo(ax, ay);
+        const vx = -uy, vy = ux;
+        for (let k = 1; k <= 7; k++) {
+          const d = k * S * .0075, s = Math.sin(c.phase + k * 1.25) * S * .0045 * Math.min(k / 3, 1);
+          x.lineTo(ax - ux * d + vx * s, ay - uy * d + vy * s);
         }
+        x.stroke();
+      }
+
+      const pinch = clamp((c.g - .72) / .28);                     // перед делением появляется перетяжка
+      const gap = pinch * w * .2;
+      const segs = pinch > 0
+        ? [[ax, ay, px - ux * gap, py - uy * gap, null], [px + ux * gap, py + uy * gap, bx, by, null]]
+        : [[ax, ay, bx, by, st.curve ? [-uy * len * st.curve * c.bend, ux * len * st.curve * c.bend] : null]];
+      const narrow = pinch > 0 ? 1 - pinch * .1 : 1;
+      x.strokeStyle = st.rim; x.lineWidth = w * narrow; x.globalAlpha = (.6 + level * .4) * fade;
+      for (const q of segs) line(...q);
+      x.strokeStyle = st.body; x.lineWidth = w * .68 * narrow; x.globalAlpha = .96 * fade;
+      for (const q of segs) line(...q);
+      x.strokeStyle = st.core; x.lineWidth = w * .24; x.globalAlpha = (.3 + level * .55) * fade;
+      for (const q of segs) {                                     // нуклеоид внутри клетки
+        const mx = (q[0] + q[2]) / 2, my = (q[1] + q[3]) / 2, tx = (q[2] - q[0]) * .24, ty = (q[3] - q[1]) * .24;
+        line(mx - tx, my - ty, mx + tx, my + ty, null);
       }
     }
     x.globalAlpha = 1;
-    present(.26 + A.energy * .2);
+    present(.3 + A.energy * .22);
+
+    // Край окуляра и шкала
+    const mask = main.createRadialGradient(cx, cy, (field - .08) * S, cx, cy, field * S);
+    mask.addColorStop(0, "rgba(0,0,0,0)"); mask.addColorStop(1, "#000");
+    main.fillStyle = mask; main.fillRect(0, 0, W, H);
+    const barW = S * .1, by = H - S * .05, ink = "rgba(214,235,224,.78)";
+    const fontPx = Math.round(Math.max(11, S * .016));
+    main.fillStyle = "rgba(4,9,8,.72)";                          // подпись читается и поверх густой колонии
+    main.fillRect(cx - S * .11, by - fontPx - S * .018, S * .22, fontPx + S * .03);
+    main.fillStyle = ink; main.fillRect(cx - barW / 2, by, barW, Math.max(1.5, 1.5 * dpr));
+    main.font = `${fontPx}px ${getComputedStyle(document.body).fontFamily}`;
+    main.textAlign = "center"; main.textBaseline = "bottom";
+    main.fillText(`10 мкм · клеток: ${alive}`, cx, by - 5 * dpr);
   },
 };
 
@@ -724,7 +807,10 @@ in vec2 a; out vec2 v; void main(){ v = a * .5 + .5; gl_Position = vec4(a, 0., 1
 precision highp float; precision highp sampler2D; in vec2 v; out vec4 o; uniform vec2 tx;`,
 };
 FL.advect = FL.head + `uniform sampler2D u, s; uniform float dt, keep;
-void main(){ o = texture(s, v - dt * texture(u, v).xy * tx) * keep; }`;
+void main(){
+  vec2 e = min(v, 1. - v);                             // у края жидкость стоит, иначе цвет кромки тянется полосами
+  o = texture(s, v - dt * texture(u, v).xy * tx * smoothstep(0., .05, min(e.x, e.y))) * keep;
+}`;
 FL.curl = FL.head + `uniform sampler2D u;
 void main(){ o = vec4(texture(u, v + vec2(tx.x, 0)).y - texture(u, v - vec2(tx.x, 0)).y - texture(u, v + vec2(0, tx.y)).x + texture(u, v - vec2(0, tx.y)).x, 0, 0, 1); }`;
 FL.vort = FL.head + `uniform sampler2D u, c; uniform float amt, dt;
@@ -748,13 +834,19 @@ void main(){
   if (burst > 0.) x.xy = d / (length(d) + 1e-3) * burst * g;
   o = texture(s, v) + x;
 }`;
-FL.show = FL.head + `uniform sampler2D s;
+FL.show = FL.head + `uniform sampler2D s; uniform float dark;
 float lump(vec2 c){ vec3 a = max(texture(s, c).rgb, 0.); return a.r + a.g + a.b; }
 void main(){
   vec3 a = max(texture(s, v).rgb, 0.);
   float m = max(a.r, max(a.g, a.b));
-  a /= 1. + .28 * m;                                   // густой слой темнеет, но не уходит в чёрный
-  vec3 c = vec3(.945, .905, .83) * exp(-a);
+  vec3 c;
+  if (dark > .5) {                                     // краска на чёрном: цвет от смеси пигментов, плотность даёт укрывистость
+    vec3 pig = exp(-a / (m + .001) * 2.1);
+    c = mix(vec3(.014, .012, .02), pig * 1.08, 1. - exp(-m * m * 1.15));   // тонкий слой исчезает в черноте
+  } else {
+    a /= 1. + .28 * m;                                 // густой слой темнеет, но не уходит в чёрный
+    c = vec3(.945, .905, .83) * exp(-a);
+  }
   c = max(mix(vec3(dot(c, vec3(.3, .55, .15))), c, 1.4), 0.);  // пигмент ярче, смеси не уходят в серое
   vec2 g = vec2(lump(v + vec2(tx.x, 0)) - lump(v - vec2(tx.x, 0)), lump(v + vec2(0, tx.y)) - lump(v - vec2(0, tx.y)));
   vec3 n = normalize(vec3(-g * .55, 1.)), l = normalize(vec3(-.5, .6, .72));
@@ -766,6 +858,13 @@ void main(){
 const paint = {
   title: "Краски",
   canvas: $("cfl"),
+  dark: (() => { try { return localStorage.getItem("eq-paint-light") !== "1"; } catch { return true; } })(),
+  label() { return `Краски · ${this.dark ? "тёмный" : "светлый"} фон · D сменить`; },
+  toggle() {
+    this.dark = !this.dark;
+    try { localStorage.setItem("eq-paint-light", this.dark ? "0" : "1"); } catch {}
+    flash($("name"), this.label(), 1800);
+  },
   ok: false, gl: null, P: {}, vel: null, dye: null, prs: null, dvg: null, crl: null,
   simW: 0, simH: 150, dyeW: 0, dyeH: 620, seen: 0, turn: 0, phase: 0, slow: 0, slowFor: 0, seeded: false,
 
@@ -896,10 +995,10 @@ const paint = {
     this.use("grad", {}, { p: this.prs.r.tex, u: this.vel.r.tex }); this.blit(this.vel.w); this.vel.swap();
     this.use("advect", { dt: h, keep: Math.exp(-h * .55) }, { u: this.vel.r.tex, s: this.vel.r.tex }); this.blit(this.vel.w); this.vel.swap();
     // Краска бледнеет только пока играет музыка, поэтому в тишине картина остаётся на холсте
-    this.use("advect", { dt: h, keep: Math.exp(-h * A.act / 7) }, { u: this.vel.r.tex, s: this.dye.r.tex }); this.blit(this.dye.w); this.dye.swap();
+    this.use("advect", { dt: h, keep: Math.exp(-h * A.act / (this.dark ? 3.2 : 7)) }, { u: this.vel.r.tex, s: this.dye.r.tex }); this.blit(this.dye.w); this.dye.swap();
 
     const save = this.tx; this.tx = [1 / this.dyeW, 1 / this.dyeH];
-    this.use("show", {}, { s: this.dye.r.tex }); this.blit(null);
+    this.use("show", { dark: this.dark ? 1 : 0 }, { s: this.dye.r.tex }); this.blit(null);
     this.tx = save;
   },
 };
@@ -907,9 +1006,9 @@ paint.canvas.addEventListener("webglcontextlost", e => { e.preventDefault(); pai
 paint.canvas.addEventListener("webglcontextrestored", () => paint.init());
 
 /* ───────────── Смена видов ───────────── */
-if (stage.init()) { light.init(); space.init(); }
+if (stage.init()) shaderViews.forEach(v => v.init());
 paint.init();
-const views = [bars, ring, light, space, molecules, paint].filter(v => v.ok !== false);
+const views = [bars, ring, light, space, bacteria, paint, fire].filter(v => v.ok !== false);
 const remember = {
   get() { try { return parseInt(localStorage.getItem("eq-view"), 10) || 0; } catch { return 0; } },
   set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },
@@ -925,7 +1024,7 @@ function show(i, announce) {
   v.enter();
   if (announce) {
     $("veil").animate([{ opacity: 1 }, { opacity: 0 }], { duration: calm < 1 ? 1 : 320, easing: "ease-out" });
-    flash($("name"), v.title, 1400);
+    flash($("name"), v.label ? v.label() : v.title, v.label ? 2200 : 1400);
   }
 }
 
@@ -1039,6 +1138,7 @@ addEventListener("keydown", e => {
   else if (k === "ArrowLeft") show(cur - 1, true);
   else if (/^[1-9]$/.test(k) && +k <= views.length) show(+k - 1, true);
   else if (e.code === "KeyF") toggleFull();
+  else if (e.code === "KeyD" && views[cur] === paint) paint.toggle();
   else return;
   e.preventDefault();
 });

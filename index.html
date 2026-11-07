@@ -81,7 +81,7 @@
 </section>
 
 <div id="name" class="hud" role="status"></div>
-<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>F</kbd> весь экран</div>
+<div id="hint" class="hud"><kbd>Клик</kbd> или <kbd>→</kbd> следующий вид · <kbd>←</kbd> предыдущий · <kbd>1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> выбор · <kbd>↑</kbd> <kbd>↓</kbd> вариация · <kbd>+</kbd> <kbd>−</kbd> чувствительность · <kbd>F</kbd> весь экран</div>
 
 <script>
 "use strict";
@@ -92,6 +92,12 @@ const follow = (dt, tau) => 1 - Math.exp(-dt / tau);          // сглажив�
 const calm = matchMedia("(prefers-reduced-motion: reduce)").matches ? .35 : 1; // меньше вспышек по запросу системы
 
 /* ───────────── Звук ───────────── */
+// Чувствительность 1–9: каждый шаг сдвигает порог на 4 dB, 5 — середина
+const SENS = {
+  level: (() => { try { return clamp(parseInt(localStorage.getItem("eq-sens"), 10) || 5, 1, 9); } catch { return 5; } })(),
+  db() { return (this.level - 5) * 4; },
+  set(l) { this.level = clamp(l, 1, 9); try { localStorage.setItem("eq-sens", String(this.level)); } catch {} },
+};
 const BANDS = 96, FMIN = 50, FMAX = 16000;
 const A = { v: new Float32Array(BANDS), act: 0, bass: 0, mid: 0, high: 0, energy: 0, beat: 0, beats: 0, sinceBeat: 9 };
 let mic = null;
@@ -160,14 +166,17 @@ function readMic(m, dt) {
 
   // Автоподстройка: общая под громкость и своя для каждой полосы.
   // Микрофон ноутбука слабо слышит бас, поэтому полосы выравниваем относительно их же максимума.
-  m.ref += (peak - m.ref) * follow(dt, peak > m.ref ? .05 : 8);
-  const RANGE = 36;
+  // Подстройка медленная в обе стороны: сильный удар выстреливает, а не приглушает всё вокруг
+  m.ref += (peak - m.ref) * follow(dt, peak > m.ref ? 2.5 : 6);
+  const RANGE = 36, FIXED = -30, sens = SENS.db();
   for (let b = 0; b < BANDS; b++) {
     const db = m.db[b];
-    m.bandRef[b] += (db - m.bandRef[b]) * follow(dt, db > m.bandRef[b] ? .05 : 6);
-    const own = Math.max(m.bandRef[b], m.ref - 48);   // верха в музыке слабее баса на десятки dB
-    const top = m.ref + (own - m.ref) * .85;
-    const n = clamp((db - (top - RANGE)) / RANGE);
+    m.bandRef[b] += (db - m.bandRef[b]) * follow(dt, db > m.bandRef[b] ? 1.5 : 6);
+    const tilt = (Math.max(m.bandRef[b], m.ref - 48) - m.ref) * .85;   // верха в музыке слабее баса на десятки dB
+    // Половина отклика подстраивается под музыку, половина зависит от настоящей громкости: громче звук — сильнее картинка
+    const nAuto = clamp((db - (m.ref + tilt - sens - RANGE)) / RANGE);
+    const nAbs = clamp((db - (FIXED + tilt - sens - RANGE)) / RANGE);
+    const n = nAuto * .5 + nAbs * .5;
     const target = Math.pow(n, 1.6) * .97 * A.act;
     A.v[b] += (target - A.v[b]) * follow(dt, target > A.v[b] ? .02 : .16);
   }
@@ -1771,6 +1780,10 @@ const variantStore = {
   for (const v of views) if (v.variants) v.variant = clamp(saved[v.title] ?? v.variant ?? 0, 0, v.variants.length - 1);
 }
 const labelOf = v => v.variants && v.variants.length > 1 ? `${v.title} · ${v.variants[v.variant]}` : v.title;
+function shiftSens(step) {
+  SENS.set(SENS.level + step);
+  flash($("name"), `Чувствительность ${"▮".repeat(SENS.level)}${"▯".repeat(9 - SENS.level)} ${SENS.level} из 9`, 1800);
+}
 function shiftVariant(step) {
   const v = views[cur], n = v.variants ? v.variants.length : 1;
   if (n < 2) { flash($("name"), `${v.title}: пока одна вариация`, 1600); return; }
@@ -1889,7 +1902,7 @@ function armCursor() {
   if (started) cursorTimer = setTimeout(() => document.body.classList.add("no-cursor"), 2000);
 }
 if (matchMedia("(pointer: coarse)").matches) {       // на телефоне подсказка про жесты
-  $("hint").innerHTML = "<kbd>Касание</kbd> или <kbd>свайп ←</kbd> следующий вид · <kbd>свайп →</kbd> предыдущий · <kbd>свайп ↑ ↓</kbd> вариация";
+  $("hint").innerHTML = "<kbd>Касание</kbd> или <kbd>свайп ←</kbd> следующий вид · <kbd>свайп →</kbd> предыдущий · <kbd>свайп ↑ ↓</kbd> вариация · <kbd>двумя пальцами ↑ ↓</kbd> чувствительность";
 }
 const HINT_HTML = $("hint").innerHTML;
 addEventListener("mousemove", () => {
@@ -1897,13 +1910,22 @@ addEventListener("mousemove", () => {
   if (started && !wantFullscreen) { $("hint").innerHTML = HINT_HTML; flash($("hint"), null, 2000); }
 });
 // Касание переключает вид, свайп влево и вправо листает виды, вверх и вниз вариации
-let press = null;
+let press = null, fingers = new Map(), twoFinger = false;
 addEventListener("pointerdown", e => {
   if (!started || e.target.closest("#gate")) return;
+  fingers.set(e.pointerId, e.clientY);
+  if (fingers.size >= 2) { twoFinger = true; press = null; return; }   // два пальца меняют чувствительность
   press = { x: e.clientX, y: e.clientY, id: e.pointerId };
 });
-addEventListener("pointercancel", () => { press = null; });
+addEventListener("pointercancel", e => { press = null; fingers.delete(e.pointerId); if (!fingers.size) twoFinger = false; });
 addEventListener("pointerup", e => {
+  const y0 = fingers.get(e.pointerId);
+  fingers.delete(e.pointerId);
+  if (twoFinger) {
+    if (y0 !== undefined && Math.abs(e.clientY - y0) > 40 && fingers.size === 1) shiftSens(e.clientY < y0 ? 1 : -1);
+    if (!fingers.size) twoFinger = false;
+    return;
+  }
   if (!press || e.pointerId !== press.id) return;
   const dx = e.clientX - press.x, dy = e.clientY - press.y;
   press = null;
@@ -1921,6 +1943,8 @@ addEventListener("keydown", e => {
   else if (/^[1-9]$/.test(k) && +k <= views.length) show(+k - 1, true);
   else if (k === "0" && views.length >= 10) show(9, true);
   else if (e.code === "KeyF") toggleFull();
+  else if (k === "+" || k === "=") shiftSens(1);
+  else if (k === "-" || k === "_" || k === "−") shiftSens(-1);
   else if (k === "ArrowUp") shiftVariant(1);
   else if (k === "ArrowDown") shiftVariant(-1);
   else return;

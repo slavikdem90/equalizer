@@ -78,26 +78,28 @@ void main() {
     // свечение глаза: в тишине чуть тусклее картинки, под музыку ярче
     col *= mix(1.0, 0.7 + 0.9 * min(uGlow, 1.2), m);
     // жилки разряда внутри радужки
-    float n = fbm(q * 55.0 + vec2(uT * 2.3, -uT * 1.7) + float(e) * 9.0);
+    float n = fbm(q * 55.0 + float(e) * 9.0);
     float veins = pow(1.0 - abs(n * 2.0 - 1.0), 14.0);
     add += uCol * veins * m * (0.5 * uE + 0.7 * uFlash) * 1.6;
     // треск по краю глаза
     float a = atan(q.y, q.x);
-    float ring = abs(r - 0.06 - 0.02 * (n1(a * 6.0 + uT * 23.0 + float(e) * 4.0) - 0.5));
-    add += uCol * 0.0012 / (ring + 0.0015) * step(0.55, n1(a * 3.0 - uT * 17.0 + float(e))) * smoothstep(0.1, 0.5, uE + uFlash) * min(uE + uFlash, 1.0) * 0.6;
-    // молнии наружу: каждая живёт свой короткий срок и перескакивает
+    float ring = abs(r - 0.06 - 0.02 * (n1(a * 6.0 + float(e) * 4.0) - 0.5));
+    add += uCol * 0.0012 / (ring + 0.0015) * step(0.55, n1(a * 3.0 + float(e))) * smoothstep(0.1, 0.5, uE + uFlash) * min(uE + uFlash, 1.0) * 0.6;
+    // молнии наружу: форма и место неподвижны, от звука меняется только яркость,
+    // чем громче, тем больше молний загорается
     for (int k = 0; k < 9; k++) {
       float fk = float(k) + float(e) * 7.0;
-      float ep = floor(uT * (7.0 + 5.0 * h1(fk)) + h1(fk * 1.7));
-      float on = step(1.0 - 0.9 * uE - 0.6 * uFlash, h1(ep * 7.3 + fk));
-      if (on < 0.5) continue;
-      float th = h1(ep * 13.1 + fk) * 6.2832;
-      float L = (0.08 + 0.28 * h1(ep * 3.7 + fk)) * (0.45 + 0.55 * uE + 0.5 * uFlash);
+      float ep = 3.0 + fk * 1.37;
+      float thr = h1(ep * 7.3 + fk) * 0.85;
+      float on = smoothstep(thr, thr + 0.15, uE + 0.6 * uFlash);
+      if (on < 0.01) continue;
+      float th = (float(k) + 0.6 * h1(ep * 13.1 + fk)) / 9.0 * 6.2832;
+      float L = 0.08 + 0.28 * h1(ep * 3.7 + fk);
       float b = bolt(q, th, L, ep * 11.0 + fk);
       // ветка от середины молнии
       vec2 dir = vec2(cos(th), sin(th));
       b += 0.7 * bolt(q - dir * L * 0.4, th + (h1(ep + fk * 5.1) - 0.5) * 1.6, L * 0.45, ep * 5.0 + fk + 3.0);
-      add += uCol * b * (0.45 + 0.35 * uE + 0.5 * uFlash) * smoothstep(0.04, 0.2, uE + uFlash);
+      add += uCol * b * on * (0.45 + 0.35 * uE + 0.5 * uFlash);
     }
     // отсвет разряда на металле вокруг глаза
     light += exp(-dot(q, q) / 0.02) * (0.6 * uE + 0.8 * uFlash);
@@ -179,7 +181,7 @@ export async function createFace(canvas, A, calm, onProgress) {
     // минимальное движение: медленный дрейф камеры, параллакс даёт объём
     const cx = 0.07 * Math.sin(t * 0.11) + 0.02 * Math.sin(t * 0.29);
     const cy = 0.035 * Math.sin(t * 0.08 + 1.3);
-    camera.position.set(cx, cy, dist - 0.012 * A.beat * act * calm);
+    camera.position.set(cx, cy, dist);
     camera.lookAt(cx * 0.35, cy * 0.35, 0.05);
 
     bloom.strength = 0.4 + 0.3 * E + 0.3 * flashV;

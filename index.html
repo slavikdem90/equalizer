@@ -74,6 +74,7 @@
 <canvas id="cgl" aria-hidden="true" hidden></canvas>
 <canvas id="cfl" aria-hidden="true" hidden></canvas>
 <canvas id="c3d" aria-hidden="true" hidden></canvas>
+<canvas id="c3m" aria-hidden="true" hidden></canvas>
 <div id="veil"></div>
 
 <section id="gate">
@@ -1788,10 +1789,33 @@ const cyborg = {
   draw(dt, t) { if (this.impl) this.impl.draw(dt, t); },
 };
 
+/* ───────────── Вид 12: маска (2.5D, отдельный модуль) ───────────── */
+const mask = {
+  title: "Маска",
+  canvas: $("c3m"),
+  impl: null, loading: false, failed: false,
+  async load() {
+    this.loading = true;
+    flash($("name"), "Маска загружается…", 8000);
+    try {
+      const mod = await import("./face.js");
+      this.impl = await mod.createFace(this.canvas, A, calm, k => flash($("name"), `Маска загружается… ${Math.round(k * 100)}%`, 8000));
+      if (views[cur] === this) flash($("name"), "Маска", 1400);
+    } catch (e) {
+      console.error(e);
+      this.failed = true;
+      flash($("name"), "Не получилось загрузить сцену «Маска». Проверьте интернет и обновите страницу.", 5000);
+    }
+    this.loading = false;
+  },
+  enter() { if (!this.impl && !this.loading && !this.failed) this.load(); },
+  draw(dt, t) { if (this.impl) this.impl.draw(dt, t); },
+};
+
 /* ───────────── Смена видов ───────────── */
 if (stage.init()) shaderViews.forEach(v => v.init());
 paint.init();
-const views = [bars, ring, light, space, bacteria, paint, fire, dopamine, rider, iron, cyborg].filter(v => v.ok !== false);
+const views = [bars, ring, light, space, bacteria, paint, fire, dopamine, rider, iron, cyborg, mask].filter(v => v.ok !== false);
 const remember = {
   get() { try { return parseInt(localStorage.getItem("eq-view"), 10) || 0; } catch { return 0; } },
   set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },
@@ -1826,7 +1850,7 @@ function show(i, announce) {
   cur = (i + views.length) % views.length;
   remember.set(cur);
   const v = views[cur];
-  for (const c of [c2d, cgl, paint.canvas, cyborg.canvas]) c.hidden = v.canvas !== c;
+  for (const c of [c2d, cgl, paint.canvas, cyborg.canvas, mask.canvas]) c.hidden = v.canvas !== c;
   v.enter();
   if (announce) {
     $("veil").animate([{ opacity: 1 }, { opacity: 0 }], { duration: calm < 1 ? 1 : 320, easing: "ease-out" });

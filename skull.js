@@ -15,6 +15,20 @@ const EYES = [new THREE.Vector3(-0.137, 0.028, 0.362), new THREE.Vector3(0.131, 
 const PIPE = new THREE.Vector3(0.352, 0.218, -0.191);
 const VENT = new THREE.Vector3(0.364, 0.208, -0.041);
 const MOUTH = new THREE.Vector3(0, -0.259, 0.464);
+// Челюсть: шарнир у механического сустава на скуле, линия прикуса спереди на y ≈ -0.300
+const JAW_GLSL = `
+uniform float uJaw; uniform mat4 uToHead, uFromHead;
+varying float vSeam;
+const vec2 JAW_PIVOT = vec2(-0.13, 0.18);                 // (y, z) в координатах головы
+float jawW(vec3 p) {
+  // зубы в модели слиты, поэтому шов узкий и идёт ровно по тёмной линии прикуса
+  float bite = mix(-0.2, -0.3, smoothstep(0.1, 0.32, p.z));
+  return smoothstep(bite + 0.004, bite - 0.004, p.y) * smoothstep(0.02, 0.09, p.z);
+}
+vec2 jawRot(vec2 yz, float a) {
+  vec2 d = yz - JAW_PIVOT; float c = cos(a), s = sin(a);
+  return JAW_PIVOT + vec2(d.x * c - d.y * s, d.x * s + d.y * c);
+}`;
 
 const clamp = (x, a = 0, b = 1) => (x < a ? a : x > b ? b : x);
 const follow = (dt, tau) => 1 - Math.exp(-dt / tau);
@@ -93,6 +107,7 @@ export async function createSkull(canvas, A, calm, onProgress) {
     loader.load(new URL("./skull.glb", import.meta.url).href, ok, e => e.total && onProgress && onProgress(e.loaded / e.total), fail)
   );
   const model = gltf.scene;
+  const jawU = { value: 0 }, jawMeshes = [];
   model.traverse(o => {
     if (!o.isMesh) return;
     if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
@@ -104,11 +119,25 @@ export async function createSkull(canvas, A, calm, onProgress) {
     }
     const map = o.material.map;
     if (map) { map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = renderer.capabilities.getMaxAnisotropy(); }
-    o.material = new THREE.MeshStandardMaterial({ map, roughness: 0.42, metalness: 0.28, envMapIntensity: 0.35 });
+    o.material = new THREE.MeshStandardMaterial({ map, roughness: 0.42, metalness: 0.28, envMapIntensity: 0.35, side: THREE.DoubleSide });
+    const toHead = { value: new THREE.Matrix4() }, fromHead = { value: new THREE.Matrix4() };
+    jawMeshes.push({ o, toHead, fromHead });
     o.material.onBeforeCompile = sh => {                       // ЧБ-вариант: текстура обесцвечивается прямо в материале
       sh.uniforms.uGray = grayU;
-      sh.fragmentShader = "uniform float uGray;\n" + sh.fragmentShader.replace("#include <map_fragment>",
-        "#include <map_fragment>\n diffuseColor.rgb = mix(diffuseColor.rgb, vec3(dot(diffuseColor.rgb, vec3(.299, .587, .114))) * 1.05, uGray);");
+      sh.uniforms.uJaw = jawU; sh.uniforms.uToHead = toHead; sh.uniforms.uFromHead = fromHead;
+      // челюсть поворачивается вокруг шарнира прямо в вершинном шейдере (модель цельная)
+      sh.vertexShader = JAW_GLSL + "\n" + sh.vertexShader
+        .replace("#include <beginnormal_vertex>", `#include <beginnormal_vertex>
+          { vec3 ph = (uToHead * vec4(position, 1.0)).xyz; float a = uJaw * jawW(ph);
+            vec3 nh = mat3(uToHead) * objectNormal; nh.yz = jawRot(nh.yz + JAW_PIVOT, a) - JAW_PIVOT;
+            objectNormal = mat3(uFromHead) * nh; }`)
+        .replace("#include <begin_vertex>", `#include <begin_vertex>
+          { vec3 ph = (uToHead * vec4(transformed, 1.0)).xyz; float a = uJaw * jawW(ph);
+            float w = jawW(ph); vSeam = 4.0 * w * (1.0 - w) * min(uJaw * 10.0, 1.0);
+            ph.yz = jawRot(ph.yz, a); transformed = (uFromHead * vec4(ph, 1.0)).xyz; }`);
+      // изнутри модель тёмная: в открытом рту видна полость, а не изнанка черепа
+      sh.fragmentShader = "uniform float uGray;\nvarying float vSeam;\n" + sh.fragmentShader.replace("#include <map_fragment>",
+        "#include <map_fragment>\n diffuseColor.rgb = mix(diffuseColor.rgb, vec3(dot(diffuseColor.rgb, vec3(.299, .587, .114))) * 1.05, uGray);\n if (!gl_FrontFacing) diffuseColor.rgb *= 0.06;\n diffuseColor.rgb *= 1.0 - 0.95 * smoothstep(0.05, 0.5, vSeam);");
     };
   });
   const box0 = new THREE.Box3().setFromObject(model);
@@ -116,6 +145,8 @@ export async function createSkull(canvas, A, calm, onProgress) {
   const box = new THREE.Box3().setFromObject(model);
   model.position.sub(box.getCenter(new THREE.Vector3()));
   head.add(model);
+  head.updateMatrixWorld(true);
+  for (const m of jawMeshes) { m.toHead.value.copy(m.o.matrixWorld); m.fromHead.value.copy(m.o.matrixWorld).invert(); }
 
   // Линзы глаз: светятся сами, их подхватывает свечение
   const lensMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 0.9, 1), toneMapped: false });
@@ -206,7 +237,7 @@ export async function createSkull(canvas, A, calm, onProgress) {
   addEventListener("resize", resize);
 
   // Состояние под музыку
-  let fire = 0, boost = 0, seen = A.beats, burst = 0, glow = 0, slow = 0, slowFor = 0, smokeAcc = 0;
+  let jaw = 0, forceJaw = 0, fire = 0, boost = 0, seen = A.beats, burst = 0, glow = 0, slow = 0, slowFor = 0, smokeAcc = 0;
   const aim = EYES.map((e, i) => ({ x: i ? 0.4 : -0.4, y: 0, tx: i ? 0.4 : -0.4, ty: 0 }));
 
   function draw(dt, t) {
@@ -228,6 +259,11 @@ export async function createSkull(canvas, A, calm, onProgress) {
       if (burst >= 1) { burst = 0; fire = Math.max(fire, 0.85); aim.forEach((a, i) => { const side = i ? 1 : -1; a.tx = clamp(a.tx + rnd(-0.15, 0.15), side < 0 ? -0.9 : 0.15, side < 0 ? -0.15 : 0.9); a.ty = clamp(a.ty + rnd(-0.08, 0.08), -0.3, 0.2); }); }
     }
     fire *= Math.exp(-dt / 0.13);
+
+    // Рот открывается только на самых громких местах, на ударе чуть шире
+    const jawT = clamp((boost - 0.45) / 0.35) * (0.8 + 0.2 * A.beat);
+    jaw += (Math.max(jawT, forceJaw) - jaw) * follow(dt, jawT > jaw ? 0.08 : 0.3);
+    jawU.value = jaw * 0.38;
 
     // Голова медленно поворачивается, на ударе кивает
     const sway = 0.38 * Math.sin(t * 0.21) + 0.12 * Math.sin(t * 0.53);
@@ -307,5 +343,5 @@ export async function createSkull(canvas, A, calm, onProgress) {
     rimC.color.set(pal.rimC); rimM.color.set(pal.rimM); key.color.set(pal.key);
   }
 
-  return { draw, resize, setVariant, get pixelRatio() { return pixelRatio; }, renderer };
+  return { draw, resize, setVariant, set forceJaw(v) { forceJaw = v; }, get jaw() { return jaw; }, get pixelRatio() { return pixelRatio; }, renderer };
 }

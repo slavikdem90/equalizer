@@ -10,10 +10,11 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 // Точки на модели (модель отцентрована, высота 1): найдены лучами по рендеру
-const EYES = [new THREE.Vector3(-0.136, 0.024, 0.36), new THREE.Vector3(0.145, 0.024, 0.36)];
-const PIPE = new THREE.Vector3(0.375, 0.236, -0.174);
-const VENT = new THREE.Vector3(0.314, 0.212, -0.035);
-const MOUTH = new THREE.Vector3(0, -0.258, 0.46);
+// Модель Hunyuan3D v3 (08.11.2026), PIPE и VENT — круглые порты на правом боку
+const EYES = [new THREE.Vector3(-0.137, 0.028, 0.362), new THREE.Vector3(0.131, 0.026, 0.362)];
+const PIPE = new THREE.Vector3(0.352, 0.218, -0.191);
+const VENT = new THREE.Vector3(0.364, 0.208, -0.041);
+const MOUTH = new THREE.Vector3(0, -0.259, 0.464);
 
 const clamp = (x, a = 0, b = 1) => (x < a ? a : x > b ? b : x);
 const follow = (dt, tau) => 1 - Math.exp(-dt / tau);
@@ -94,7 +95,13 @@ export async function createSkull(canvas, A, calm, onProgress) {
   const model = gltf.scene;
   model.traverse(o => {
     if (!o.isMesh) return;
-    o.geometry.computeVertexNormals();
+    if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
+    // вырожденные треугольники дают нормаль NaN, а свечение размазывает NaN на весь кадр
+    const nrm = o.geometry.attributes.normal;
+    for (let i = 0; i < nrm.count; i++) {
+      const x = nrm.getX(i), y = nrm.getY(i), z = nrm.getZ(i), l = Math.hypot(x, y, z);
+      if (!(l > 1e-6)) nrm.setXYZ(i, 0, 1, 0);
+    }
     const map = o.material.map;
     if (map) { map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = renderer.capabilities.getMaxAnisotropy(); }
     o.material = new THREE.MeshStandardMaterial({ map, roughness: 0.42, metalness: 0.28, envMapIntensity: 0.35 });
@@ -104,6 +111,8 @@ export async function createSkull(canvas, A, calm, onProgress) {
         "#include <map_fragment>\n diffuseColor.rgb = mix(diffuseColor.rgb, vec3(dot(diffuseColor.rgb, vec3(.299, .587, .114))) * 1.05, uGray);");
     };
   });
+  const box0 = new THREE.Box3().setFromObject(model);
+  model.scale.setScalar(1 / box0.getSize(new THREE.Vector3()).y);   // высота модели 1
   const box = new THREE.Box3().setFromObject(model);
   model.position.sub(box.getCenter(new THREE.Vector3()));
   head.add(model);
@@ -242,7 +251,7 @@ export async function createSkull(canvas, A, calm, onProgress) {
     glow += ((0.25 + 0.6 * act * (0.4 + A.high)) - glow) * follow(dt, 0.15);
     const lk = 1 + 2 * (glow + fire);
     lensMat.color.setRGB(pal.lens[0] * lk, pal.lens[1] * lk, pal.lens[2] * lk);
-    eyeLights.forEach(l => { l.intensity = 0.05 + 1.4 * fire + 0.15 * glow; });
+    eyeLights.forEach(l => { l.intensity = 0.05 + 0.6 * fire + 0.12 * glow; });
     flashes.forEach(f => { const s = 0.04 + 0.16 * fire; f.scale.set(s, s, s); f.material.opacity = clamp(0.15 * glow + 0.8 * fire); });
 
     // Свет дышит от баса, контровые вспыхивают на залпе
@@ -278,7 +287,7 @@ export async function createSkull(canvas, A, calm, onProgress) {
     camera.position.set(camBase.x + rnd(-shake, shake), camBase.y + rnd(-shake, shake), camBase.z);
     camera.lookAt(0, 0.02, 0);
 
-    bloom.strength = 0.35 + 0.5 * fire + 0.15 * boost;
+    bloom.strength = 0.35 + 0.3 * fire + 0.12 * boost;
 
     // Если не успеваем, снижаем разрешение
     slow += (dt * 1000 - slow) * follow(dt, 0.5);

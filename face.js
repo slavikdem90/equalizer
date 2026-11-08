@@ -26,7 +26,8 @@ void main() {
 }`;
 
 const frag = /* glsl */ `
-uniform sampler2D uMap;
+uniform sampler2D uMap, uVeins;
+uniform float uReach;
 uniform vec2 uEyes[2];
 uniform float uT, uE, uFlash, uGlow, uAspect, uRed;
 uniform vec3 uCol;
@@ -95,7 +96,7 @@ void main() {
       float on = smoothstep(thr, thr + 0.2, uE + 0.6 * uFlash);
       if (on < 0.01) continue;
       float th = (float(k) + 0.6 * h1(ep * 13.1 + fk)) / 9.0 * 6.2832;
-      float L = (0.08 + 0.28 * h1(ep * 3.7 + fk)) * (0.25 + 0.75 * on);
+      float L = (0.05 + 0.14 * h1(ep * 3.7 + fk)) * (0.25 + 0.75 * on);
       float b = bolt(q, th, L, ep * 11.0 + fk);
       // ветка от середины молнии
       vec2 dir = vec2(cos(th), sin(th));
@@ -107,6 +108,16 @@ void main() {
   }
   col += col * uCol * min(light, 1.2) * 0.9;
   col += add;
+  // ток по гравировке: от глаз по узорам, чем громче, тем дальше доходит
+  vec2 vv = texture2D(uVeins, vUv).rg;
+  if (vv.r > 0.01 && uReach > 0.001) {
+    float d = vv.g;
+    float lit = smoothstep(uReach, uReach - 0.06, d);
+    float front = exp(-abs(d - uReach) * 40.0) * step(d, uReach + 0.02);
+    float flow = 0.55 + 0.45 * sin(d * 90.0 - uT * 14.0);                // бегущие импульсы вдоль линий
+    float crack = 0.75 + 0.25 * n1(d * 300.0 + uT * 30.0);
+    col += uCol * vv.r * (lit * flow * crack * (0.55 + 0.6 * uFlash) + front * 1.6) * 0.9;
+  }
   // края картинки уходят в черноту (на узком экране)
   vec2 ed = smoothstep(vec2(0.0), vec2(0.04, 0.06), vUv) * smoothstep(vec2(0.0), vec2(0.04, 0.06), 1.0 - vUv);
   gl_FragColor = vec4(col * ed.x * ed.y, 1.0);
@@ -121,8 +132,9 @@ export async function createFace(canvas, A, calm, onProgress) {
 
   const loader = new THREE.TextureLoader();
   let got = 0;
-  const load = url => new Promise((ok, bad) => loader.load(url, t => { onProgress && onProgress(++got / 2); ok(t); }, undefined, bad));
-  const [map, depth] = await Promise.all([load("./face.webp"), load("./face-depth.png")]);
+  const load = url => new Promise((ok, bad) => loader.load(url, t => { onProgress && onProgress(++got / 3); ok(t); }, undefined, bad));
+  const [map, depth, veins] = await Promise.all([load("./face.webp"), load("./face-depth.png"), load("./face-veins.png")]);
+  veins.colorSpace = THREE.NoColorSpace;
   map.colorSpace = THREE.SRGBColorSpace;
   map.anisotropy = renderer.capabilities.getMaxAnisotropy();
   depth.colorSpace = THREE.NoColorSpace;
@@ -132,7 +144,7 @@ export async function createFace(canvas, A, calm, onProgress) {
   const camera = new THREE.PerspectiveCamera(30, 1, 0.05, 20);
 
   const u = {
-    uMap: { value: map }, uDepth: { value: depth }, uDisp: { value: 0.32 },
+    uMap: { value: map }, uDepth: { value: depth }, uVeins: { value: veins }, uReach: { value: 0 }, uDisp: { value: 0.32 },
     uEyes: { value: EYES }, uT: { value: 0 }, uE: { value: 0 }, uFlash: { value: 0 }, uGlow: { value: 0.3 },
     uAspect: { value: IMG_ASPECT }, uRed: { value: 0 }, uCol: { value: new THREE.Color(0.35, 0.75, 1.6) },
   };
@@ -167,7 +179,7 @@ export async function createFace(canvas, A, calm, onProgress) {
   resize();
   addEventListener("resize", resize);
 
-  let E = 0, flashV = 0, glow = 0.3, seen = A.beats, slow = 0, slowFor = 0;
+  let reach = 0, E = 0, flashV = 0, glow = 0.3, seen = A.beats, slow = 0, slowFor = 0;
 
   function draw(dt, t) {
     const act = A.act;
@@ -177,6 +189,10 @@ export async function createFace(canvas, A, calm, onProgress) {
     if (A.beats !== seen) { seen = A.beats; if (act > 0.15) flashV = Math.max(flashV, 0.5 + 0.5 * A.bass); }
     flashV *= Math.exp(-dt / 0.14);
     glow += ((0.3 + 0.7 * act * (0.3 + 0.7 * E)) - glow) * follow(dt, 0.2);
+    // ток растекается по узорам не мгновенно: вперёд ~0,6 с, назад ~1 с
+    const reachT = clamp(E * 1.25 + 0.25 * flashV);
+    reach += (reachT - reach) * follow(dt, reachT > reach ? 0.6 : 1.0);
+    u.uReach.value = reach;
     u.uT.value = t; u.uE.value = E; u.uFlash.value = flashV; u.uGlow.value = glow + 0.4 * flashV;
 
     // минимальное движение: медленный дрейф камеры, параллакс даёт объём

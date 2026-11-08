@@ -80,7 +80,7 @@ void main() {
     // жилки разряда внутри радужки
     float n = fbm(q * 55.0 + float(e) * 9.0);
     float veins = pow(1.0 - abs(n * 2.0 - 1.0), 14.0);
-    add += uCol * veins * m * (0.5 * uE + 0.7 * uFlash) * 1.6;
+    add += uCol * veins * m * (0.12 + 0.5 * uE + 0.7 * uFlash) * 1.6;
     // треск по краю глаза
     float a = atan(q.y, q.x);
     float ring = abs(r - 0.06 - 0.02 * (n1(a * 6.0 + float(e) * 4.0) - 0.5));
@@ -91,15 +91,15 @@ void main() {
       float fk = float(k) + float(e) * 7.0;
       float ep = 3.0 + fk * 1.37;
       float thr = h1(ep * 7.3 + fk) * 0.85;
-      float on = smoothstep(thr, thr + 0.15, uE + 0.6 * uFlash);
-      if (on < 0.01) continue;
+      // в тишине все ветки остаются тусклыми, под музыку разгораются
+      float on = 0.22 + 0.78 * smoothstep(thr, thr + 0.15, uE + 0.6 * uFlash);
       float th = (float(k) + 0.6 * h1(ep * 13.1 + fk)) / 9.0 * 6.2832;
       float L = 0.08 + 0.28 * h1(ep * 3.7 + fk);
       float b = bolt(q, th, L, ep * 11.0 + fk);
       // ветка от середины молнии
       vec2 dir = vec2(cos(th), sin(th));
       b += 0.7 * bolt(q - dir * L * 0.4, th + (h1(ep + fk * 5.1) - 0.5) * 1.6, L * 0.45, ep * 5.0 + fk + 3.0);
-      add += uCol * b * on * (0.45 + 0.35 * uE + 0.5 * uFlash);
+      add += uCol * b * on * (0.4 + 0.4 * uE + 0.5 * uFlash);
     }
     // отсвет разряда на металле вокруг глаза
     light += exp(-dot(q, q) / 0.02) * (0.6 * uE + 0.8 * uFlash);

@@ -15,16 +15,29 @@ const EYES = [new THREE.Vector3(-0.137, 0.028, 0.362), new THREE.Vector3(0.131, 
 const PIPE = new THREE.Vector3(0.352, 0.218, -0.191);
 const VENT = new THREE.Vector3(0.364, 0.208, -0.041);
 const MOUTH = new THREE.Vector3(0, -0.259, 0.464);
-// Челюсть: шарнир у механического сустава на скуле, линия прикуса спереди на y ≈ -0.300
+// Челюсть: шарнир у механического сустава на скуле, линия прикуса спереди на y ≈ -0.300.
+// Модель цельная и зубы слиты, поэтому при загрузке режем её по прикусу: каждый треугольник
+// целиком уходит в череп или в челюсть, и при открытии рта ничего не тянется.
+function splitJaw(mesh) {
+  const geo = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry;
+  mesh.geometry.dispose();
+  mesh.geometry = geo;
+  const pos = geo.attributes.position, n = pos.count, jaw = new Float32Array(n);
+  const v = new THREE.Vector3(), c = new THREE.Vector3(), M = mesh.matrixWorld;
+  for (let i = 0; i < n; i += 3) {
+    c.set(0, 0, 0);
+    for (let k = 0; k < 3; k++) c.add(v.fromBufferAttribute(pos, i + k).applyMatrix4(M));
+    c.multiplyScalar(1 / 3);
+    const t = clamp((c.z - 0.1) / 0.22), bite = -0.2 - 0.1 * t * t * (3 - 2 * t);
+    const w = c.y < bite && c.z > 0.05 ? 1 : 0;
+    jaw[i] = jaw[i + 1] = jaw[i + 2] = w;
+  }
+  geo.setAttribute("aJaw", new THREE.BufferAttribute(jaw, 1));
+}
 const JAW_GLSL = `
 uniform float uJaw; uniform mat4 uToHead, uFromHead;
-varying float vSeam;
+attribute float aJaw;                                     // 1 — треугольник челюсти, 0 — черепа
 const vec2 JAW_PIVOT = vec2(-0.13, 0.18);                 // (y, z) в координатах головы
-float jawW(vec3 p) {
-  // зубы в модели слиты, поэтому шов узкий и идёт ровно по тёмной линии прикуса
-  float bite = mix(-0.2, -0.3, smoothstep(0.1, 0.32, p.z));
-  return smoothstep(bite + 0.004, bite - 0.004, p.y) * smoothstep(0.02, 0.09, p.z);
-}
 vec2 jawRot(vec2 yz, float a) {
   vec2 d = yz - JAW_PIVOT; float c = cos(a), s = sin(a);
   return JAW_PIVOT + vec2(d.x * c - d.y * s, d.x * s + d.y * c);
@@ -128,16 +141,15 @@ export async function createSkull(canvas, A, calm, onProgress) {
       // челюсть поворачивается вокруг шарнира прямо в вершинном шейдере (модель цельная)
       sh.vertexShader = JAW_GLSL + "\n" + sh.vertexShader
         .replace("#include <beginnormal_vertex>", `#include <beginnormal_vertex>
-          { vec3 ph = (uToHead * vec4(position, 1.0)).xyz; float a = uJaw * jawW(ph);
+          { float a = uJaw * aJaw;
             vec3 nh = mat3(uToHead) * objectNormal; nh.yz = jawRot(nh.yz + JAW_PIVOT, a) - JAW_PIVOT;
             objectNormal = mat3(uFromHead) * nh; }`)
         .replace("#include <begin_vertex>", `#include <begin_vertex>
-          { vec3 ph = (uToHead * vec4(transformed, 1.0)).xyz; float a = uJaw * jawW(ph);
-            float w = jawW(ph); vSeam = 4.0 * w * (1.0 - w) * min(uJaw * 10.0, 1.0);
+          { vec3 ph = (uToHead * vec4(transformed, 1.0)).xyz; float a = uJaw * aJaw;
             ph.yz = jawRot(ph.yz, a); transformed = (uFromHead * vec4(ph, 1.0)).xyz; }`);
       // изнутри модель тёмная: в открытом рту видна полость, а не изнанка черепа
-      sh.fragmentShader = "uniform float uGray;\nvarying float vSeam;\n" + sh.fragmentShader.replace("#include <map_fragment>",
-        "#include <map_fragment>\n diffuseColor.rgb = mix(diffuseColor.rgb, vec3(dot(diffuseColor.rgb, vec3(.299, .587, .114))) * 1.05, uGray);\n if (!gl_FrontFacing) diffuseColor.rgb *= 0.06;\n diffuseColor.rgb *= 1.0 - 0.95 * smoothstep(0.05, 0.5, vSeam);");
+      sh.fragmentShader = "uniform float uGray;\n" + sh.fragmentShader.replace("#include <map_fragment>",
+        "#include <map_fragment>\n diffuseColor.rgb = mix(diffuseColor.rgb, vec3(dot(diffuseColor.rgb, vec3(.299, .587, .114))) * 1.05, uGray);\n if (!gl_FrontFacing) diffuseColor.rgb *= 0.06;");
     };
   });
   const box0 = new THREE.Box3().setFromObject(model);
@@ -146,7 +158,7 @@ export async function createSkull(canvas, A, calm, onProgress) {
   model.position.sub(box.getCenter(new THREE.Vector3()));
   head.add(model);
   head.updateMatrixWorld(true);
-  for (const m of jawMeshes) { m.toHead.value.copy(m.o.matrixWorld); m.fromHead.value.copy(m.o.matrixWorld).invert(); }
+  for (const m of jawMeshes) { m.toHead.value.copy(m.o.matrixWorld); m.fromHead.value.copy(m.o.matrixWorld).invert(); splitJaw(m.o); }
 
   // Линзы глаз: светятся сами, их подхватывает свечение
   const lensMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 0.9, 1), toneMapped: false });

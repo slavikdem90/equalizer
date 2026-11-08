@@ -49,7 +49,7 @@ float bolt(vec2 q, float th, float L, float seed) {
   if (along < 0.0 || along > L) return 0.0;
   float k = along / L;
   float lat = (n1(along * 38.0 + seed) - 0.5) * 0.05 + (n1(along * 120.0 + seed * 3.1) - 0.5) * 0.016;
-  lat *= smoothstep(0.0, 0.25, k);
+  lat *= smoothstep(0.02, 0.07, along);   // форма не зависит от длины: молния растёт, не дёргаясь
   float d = abs(perp - lat);
   float fade = smoothstep(1.0, 0.55, k) * smoothstep(0.02, 0.045, along);
   return (0.0014 / (d + 0.0011) + 0.6 * exp(-d * 180.0)) * fade;
@@ -80,7 +80,7 @@ void main() {
     // жилки разряда внутри радужки
     float n = fbm(q * 55.0 + float(e) * 9.0);
     float veins = pow(1.0 - abs(n * 2.0 - 1.0), 14.0);
-    add += uCol * veins * m * (0.12 + 0.5 * uE + 0.7 * uFlash) * 1.6;
+    add += uCol * veins * m * (0.5 * uE + 0.7 * uFlash) * 1.6;
     // треск по краю глаза
     float a = atan(q.y, q.x);
     float ring = abs(r - 0.06 - 0.02 * (n1(a * 6.0 + float(e) * 4.0) - 0.5));
@@ -91,10 +91,11 @@ void main() {
       float fk = float(k) + float(e) * 7.0;
       float ep = 3.0 + fk * 1.37;
       float thr = h1(ep * 7.3 + fk) * 0.85;
-      // в тишине все ветки остаются тусклыми, под музыку разгораются
-      float on = 0.22 + 0.78 * smoothstep(thr, thr + 0.15, uE + 0.6 * uFlash);
+      // в тишине молний нет; с музыкой они вырастают из глаза наружу по неподвижному пути
+      float on = smoothstep(thr, thr + 0.2, uE + 0.6 * uFlash);
+      if (on < 0.01) continue;
       float th = (float(k) + 0.6 * h1(ep * 13.1 + fk)) / 9.0 * 6.2832;
-      float L = 0.08 + 0.28 * h1(ep * 3.7 + fk);
+      float L = (0.08 + 0.28 * h1(ep * 3.7 + fk)) * (0.25 + 0.75 * on);
       float b = bolt(q, th, L, ep * 11.0 + fk);
       // ветка от середины молнии
       vec2 dir = vec2(cos(th), sin(th));
@@ -171,7 +172,7 @@ export async function createFace(canvas, A, calm, onProgress) {
   function draw(dt, t) {
     const act = A.act;
     // разряд: от верхов и середины, на ударе вспышка
-    const target = act * clamp(0.25 + 0.9 * A.high + 0.4 * A.mid + 0.3 * (A.energy - 0.4));
+    const target = act * clamp(0.9 * A.high + 0.4 * A.mid + 0.6 * A.energy - 0.05);
     E += (target - E) * follow(dt, target > E ? 0.05 : 0.45);
     if (A.beats !== seen) { seen = A.beats; if (act > 0.15) flashV = Math.max(flashV, 0.5 + 0.5 * A.bass); }
     flashV *= Math.exp(-dt / 0.14);

@@ -1800,6 +1800,7 @@ const mask = {
     try {
       const mod = await import("./face.js");
       this.impl = await mod.createFace(this.canvas, A, calm, k => flash($("name"), `Маска загружается… ${Math.round(k * 100)}%`, 8000));
+      this.impl.setVariant(this.variant);
       if (views[cur] === this) flash($("name"), "Маска", 1400);
     } catch (e) {
       console.error(e);
@@ -1808,6 +1809,8 @@ const mask = {
     }
     this.loading = false;
   },
+  variants: ["голубые глаза", "красные глаза"], variant: 0,
+  onVariant() { if (this.impl) this.impl.setVariant(this.variant); },
   enter() { if (!this.impl && !this.loading && !this.failed) this.load(); },
   draw(dt, t) { if (this.impl) this.impl.draw(dt, t); },
 };

@@ -28,7 +28,7 @@ void main() {
 const frag = /* glsl */ `
 uniform sampler2D uMap;
 uniform vec2 uEyes[2];
-uniform float uT, uE, uFlash, uGlow, uAspect;
+uniform float uT, uE, uFlash, uGlow, uAspect, uRed;
 uniform vec3 uCol;
 varying vec2 vUv;
 
@@ -57,6 +57,18 @@ float bolt(vec2 q, float th, float L, float seed) {
 
 void main() {
   vec3 col = texture2D(uMap, vUv).rgb;
+  // вариация «красные глаза»: голубое свечение глаз перекрашивается в красное
+  if (uRed > 0.5) {
+    float near = 0.0;
+    for (int e = 0; e < 2; e++) {
+      vec2 q = (vUv - uEyes[e]) * vec2(uAspect, 1.0);
+      near = max(near, exp(-dot(q * vec2(1.0, 1.6), q * vec2(1.0, 1.6)) / 0.012));
+    }
+    float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    float w = clamp((col.b - col.r) * 4.0 - 0.15, 0.0, 1.0) * near;
+    vec3 red = vec3(max(col.g, col.b) * 1.5, lum * 0.18, lum * 0.12);
+    col = mix(mix(col, vec3(lum) * 1.05, 0.35), red, w);
+  }
   vec3 add = vec3(0.0);
   float light = 0.0;
   for (int e = 0; e < 2; e++) {
@@ -119,7 +131,7 @@ export async function createFace(canvas, A, calm, onProgress) {
   const u = {
     uMap: { value: map }, uDepth: { value: depth }, uDisp: { value: 0.32 },
     uEyes: { value: EYES }, uT: { value: 0 }, uE: { value: 0 }, uFlash: { value: 0 }, uGlow: { value: 0.3 },
-    uAspect: { value: IMG_ASPECT }, uCol: { value: new THREE.Color(0.35, 0.75, 1.6) },
+    uAspect: { value: IMG_ASPECT }, uRed: { value: 0 }, uCol: { value: new THREE.Color(0.35, 0.75, 1.6) },
   };
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(IMG_ASPECT, 1, 384, 216),
@@ -178,5 +190,8 @@ export async function createFace(canvas, A, calm, onProgress) {
     composer.render(dt);
   }
 
-  return { draw, resize, get pixelRatio() { return pixelRatio; }, renderer };
+  const COLORS = [new THREE.Color(0.35, 0.75, 1.6), new THREE.Color(1.8, 0.22, 0.12)];
+  function setVariant(i) { u.uRed.value = i === 1 ? 1 : 0; u.uCol.value.copy(COLORS[i] || COLORS[0]); }
+
+  return { draw, resize, setVariant, get pixelRatio() { return pixelRatio; }, renderer };
 }

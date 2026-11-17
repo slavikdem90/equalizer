@@ -1886,12 +1886,20 @@ const balloons = {
     bg.width = fg.width = W; bg.height = fg.height = H;
     const x = bg.getContext("2d"), hz = H * .66;
     const sky = x.createLinearGradient(0, 0, 0, hz);
-    sky.addColorStop(0, "#2f7fd6"); sky.addColorStop(.5, "#6fb2ec"); sky.addColorStop(1, "#d6ecfb");
+    sky.addColorStop(0, "#0f6ad8"); sky.addColorStop(.45, "#3b9cf0"); sky.addColorStop(.85, "#a9dcff"); sky.addColorStop(1, "#fff1c9");
     x.fillStyle = sky; x.fillRect(0, 0, W, H);
-    const sx = W * .8, sy = H * .13;
-    const sun = x.createRadialGradient(sx, sy, 0, sx, sy, H * .6);
-    sun.addColorStop(0, "rgba(255,255,245,1)"); sun.addColorStop(.05, "rgba(255,252,225,.95)"); sun.addColorStop(.065, "rgba(255,248,210,.55)");
-    sun.addColorStop(.3, "rgba(255,246,215,.16)"); sun.addColorStop(1, "rgba(255,246,215,0)");
+    const sx = W * .8, sy = H * .14;
+    x.save(); x.translate(sx, sy); x.globalCompositeOperation = "lighter";      // жаркое солнце с лучами
+    for (let i = 0; i < 14; i++) {
+      x.rotate(Math.PI * 2 / 14 + rnd(-.05, .05));
+      const L = H * rnd(.35, .7), g = x.createLinearGradient(0, 0, L, 0);
+      g.addColorStop(0, "rgba(255,240,170,.22)"); g.addColorStop(1, "rgba(255,240,170,0)");
+      x.fillStyle = g; x.beginPath(); x.moveTo(0, 0); x.lineTo(L, -L * .05); x.lineTo(L, L * .05); x.closePath(); x.fill();
+    }
+    x.restore();
+    const sun = x.createRadialGradient(sx, sy, 0, sx, sy, H * .7);
+    sun.addColorStop(0, "rgba(255,255,240,1)"); sun.addColorStop(.06, "rgba(255,250,205,1)"); sun.addColorStop(.075, "rgba(255,236,150,.6)");
+    sun.addColorStop(.3, "rgba(255,226,140,.2)"); sun.addColorStop(1, "rgba(255,220,140,0)");
     x.fillStyle = sun; x.fillRect(0, 0, W, H);
     const hills = (base, amp, seed, top, bottom, haze) => {
       x.beginPath(); x.moveTo(0, H);
@@ -1908,10 +1916,13 @@ const balloons = {
       m.addColorStop(0, "rgba(220,238,250,0)"); m.addColorStop(1, `rgba(220,238,250,${haze})`);
       x.fillStyle = m; x.fill();
     };
-    hills(hz + H * .02, H * .13, 1.3, "#9fc3cf", "#b9d6dc", .5);
-    hills(hz + H * .07, H * .11, 4.1, "#7fb08a", "#9cc39a", .35);
-    hills(hz + H * .13, H * .1, 7.7, "#5f9e55", "#7fb463", .22);
-    hills(hz + H * .2, H * .08, 2.9, "#4f9440", "#6aab4c", .12);
+    hills(hz + H * .02, H * .13, 1.3, "#8fc2c4", "#b4dccf", .45);
+    hills(hz + H * .07, H * .11, 4.1, "#e9c65a", "#f3d97c", .25);             // пшеничное поле
+    hills(hz + H * .13, H * .1, 7.7, "#7cbf3c", "#9ad155", .15);
+    hills(hz + H * .2, H * .08, 2.9, "#5fae2e", "#86c844", .08);
+    x.globalCompositeOperation = "soft-light";                                // тёплый летний свет поверх всего
+    x.fillStyle = "rgba(255,200,90,.35)"; x.fillRect(0, 0, W, H);
+    x.globalCompositeOperation = "source-over";
     // передний луг: трава, цветы, круглые деревья
     const f = fg.getContext("2d"), top = H * .87;
     const edge = u => top - (Math.sin(u * 4.2 + .5) * .5 + Math.sin(u * 9.1) * .2) * H * .04;
@@ -1929,7 +1940,7 @@ const balloons = {
     for (let i = 0; i <= 120; i++) { const u = i / 120; f.lineTo(u * W, edge(u)); }
     f.lineTo(W, H); f.closePath();
     const mg = f.createLinearGradient(0, top - H * .05, 0, H);
-    mg.addColorStop(0, "#6fbf4a"); mg.addColorStop(1, "#3d8a2c");
+    mg.addColorStop(0, "#82cc3e"); mg.addColorStop(1, "#3f9a22");
     f.fillStyle = mg; f.fill();
     f.save(); f.clip();
     for (let i = 0; i < 900; i++) {                                         // травинки
@@ -1937,13 +1948,35 @@ const balloons = {
       f.strokeStyle = Math.random() < .5 ? "rgba(40,110,30,.55)" : "rgba(150,210,100,.5)"; f.lineWidth = Math.max(1, dpr);
       f.beginPath(); f.moveTo(px, py); f.lineTo(px + rnd(-1, 1) * hh * .4, py - hh); f.stroke();
     }
-    const flowers = ["#ffffff", "#ffe14a", "#ff6fa8", "#ff5a4a", "#b88cff"];
+    const flowers = ["#ffffff", "#ffffff", "#ffe14a", "#ff3b30", "#ff6fa8", "#ffb020"];
     for (let i = 0; i < 260; i++) {                                         // цветы
       const u = Math.random(), py = rnd(edge(u) + H * .01, H), k = (py - top) / (H - top);
       f.fillStyle = flowers[Math.floor(Math.random() * flowers.length)];
       f.beginPath(); f.arc(u * W, py, Math.max(1, dpr * (1 + 2.5 * k)), 0, 7); f.fill();
     }
     f.restore();
+    // подсолнухи у самого края экрана: крупные впереди, мелкие дальше
+    const sunflower = (px, by, h) => {
+      const hx = px + h * rnd(-.08, .08), hy = by - h;
+      f.strokeStyle = "#3e8a24"; f.lineWidth = Math.max(2, h * .045);
+      f.beginPath(); f.moveTo(px, by + h * .2); f.quadraticCurveTo(px + h * .05, by - h * .5, hx, hy); f.stroke();
+      f.fillStyle = "#4a9a2a";
+      for (const side of [-1, 1]) { const ly = by - h * rnd(.3, .55);
+        f.beginPath(); f.ellipse(px + side * h * .13, ly, h * .14, h * .055, side * -.5, 0, 7); f.fill(); }
+      const R = h * .2;
+      for (let k = 0; k < 18; k++) {
+        const a = k / 18 * Math.PI * 2;
+        f.fillStyle = k % 2 ? "#ffc61a" : "#ffd84a";
+        f.beginPath(); f.ellipse(hx + Math.cos(a) * R * .95, hy + Math.sin(a) * R * .95, R * .55, R * .2, a, 0, 7); f.fill();
+      }
+      const c = f.createRadialGradient(hx - R * .15, hy - R * .15, 0, hx, hy, R * .6);
+      c.addColorStop(0, "#7a4a1c"); c.addColorStop(1, "#3a2210");
+      f.fillStyle = c; f.beginPath(); f.arc(hx, hy, R * .6, 0, 7); f.fill();
+    };
+    const sfs = [];
+    for (let i = 0; i < 26; i++) sfs.push([Math.random(), rnd(0, 1)]);
+    sfs.sort((a, b) => a[1] - b[1]);
+    for (const [u, d] of sfs) sunflower(u * W, H * (.93 + .1 * d), H * (.07 + .09 * d));
   },
   spawn(y) {
     const z = rnd(.35, 1), asp = W / H;
@@ -2039,6 +2072,25 @@ const balloons = {
       main.beginPath(); main.moveTo(s.x, s.y); main.bezierCurveTo(s.x + w, s.y + s.len * .3, s.x - w, s.y + s.len * .6, s.x + w * .4, s.y + s.len); main.stroke();
     }
     main.drawImage(this.fg, 0, 0);
+    // бабочки над лугом: петляют, под музыку машут крыльями чаще
+    if (!this.flies) this.flies = Array.from({ length: 6 }, () => ({ x: rnd(0, asp), y: rnd(.72, .92), a: rnd(0, 7), ph: rnd(0, 7),
+      c: ["#ffffff", "#ffd23a", "#ff8a1f", "#7fc8ff", "#ff7fbf"][Math.floor(Math.random() * 5)] }));
+    for (const fl of this.flies) {
+      fl.a += rnd(-1, 1) * dt * 3;
+      fl.x += Math.cos(fl.a) * dt * .06; fl.y += Math.sin(fl.a) * dt * .04 + Math.sin(t * 3 + fl.ph) * dt * .02;
+      if (fl.y < .72) fl.a = rnd(.4, 2.7); if (fl.y > .95) fl.a = rnd(-2.7, -.4);   // держатся над лугом
+      if (fl.x < -.05) fl.x = asp + .05; if (fl.x > asp + .05) fl.x = -.05;
+      fl.ph += dt * (14 + 16 * act * A.energy);
+      const px = fl.x * S, py = fl.y * S, sz = S * .019, w = .25 + .75 * Math.abs(Math.sin(fl.ph));
+      main.save(); main.translate(px, py); main.rotate(Math.cos(fl.a) > 0 ? .2 : -.2);
+      main.fillStyle = fl.c;
+      for (const side of [-1, 1]) {
+        main.beginPath(); main.ellipse(side * sz * .55 * w, -sz * .25, sz * .6 * w, sz * .5, side * .3, 0, 7); main.fill();
+        main.beginPath(); main.ellipse(side * sz * .4 * w, sz * .35, sz * .4 * w, sz * .33, -side * .3, 0, 7); main.fill();
+      }
+      main.fillStyle = "#2a2a2a"; main.fillRect(-sz * .08, -sz * .45, sz * .16, sz * .9);
+      main.restore();
+    }
   },
 };
 

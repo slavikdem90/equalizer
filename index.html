@@ -1956,6 +1956,7 @@ const balloons = {
     }
     f.restore();
     // подсолнухи у самого края экрана: крупные впереди, мелкие дальше
+    this.perches = [];
     const sunflower = (px, by, h) => {
       const hx = px + h * rnd(-.08, .08), hy = by - h;
       f.strokeStyle = "#3e8a24"; f.lineWidth = Math.max(2, h * .045);
@@ -1972,6 +1973,7 @@ const balloons = {
       const c = f.createRadialGradient(hx - R * .15, hy - R * .15, 0, hx, hy, R * .6);
       c.addColorStop(0, "#7a4a1c"); c.addColorStop(1, "#3a2210");
       f.fillStyle = c; f.beginPath(); f.arc(hx, hy, R * .6, 0, 7); f.fill();
+      this.perches.push({ x: hx, y: hy - R * .35, R });                    // сюда садятся бабочки
     };
     const sfs = [];
     for (let i = 0; i < 26; i++) sfs.push([Math.random(), rnd(0, 1)]);
@@ -2094,10 +2096,131 @@ const balloons = {
   },
 };
 
+/* ───────────── Вид 13: бабочки на летнем лугу (шары пока убраны из списка) ───────────── */
+// Крыло (переднее + заднее) одной стороны, тело справа на x = 120. Правое крыло — зеркальная копия
+const SPECIES = [
+  { base: "#ff8a1a", light: "#ffc070", edge: "#1a1410", spots: "#ffffff" },     // монарх
+  { base: "#2f8cff", light: "#9fe0ff", edge: "#0c1838", spots: "#cfefff" },     // морфо
+  { base: "#ffe24a", light: "#fff6b0", edge: "#b8921a", spots: "#ff9a2a" },     // лимонница
+  { base: "#f7f7ef", light: "#ffffff", edge: "#3a3a3a", spots: "#2a2a2a" },     // капустница
+  { base: "#c8322a", light: "#ff7a5a", edge: "#2a0e0a", spots: "#5ab0ff", eye: true },  // павлиний глаз
+  { base: "#ff7fbf", light: "#ffd0ea", edge: "#7a1f4f", spots: "#ffffff" },
+];
+function wingSprite(sp) {
+  const c = document.createElement("canvas"); c.width = 124; c.height = 124;
+  const x = c.getContext("2d");
+  const fore = new Path2D(); fore.moveTo(120, 50); fore.bezierCurveTo(90, 18, 40, 2, 10, 14); fore.bezierCurveTo(6, 40, 24, 58, 50, 64); fore.lineTo(120, 64); fore.closePath();
+  const hind = new Path2D(); hind.moveTo(120, 60); hind.bezierCurveTo(80, 60, 40, 72, 38, 92); hind.bezierCurveTo(40, 118, 80, 122, 104, 104); hind.bezierCurveTo(114, 94, 120, 80, 120, 68); hind.closePath();
+  for (const path of [hind, fore]) {
+    const g = x.createRadialGradient(118, 62, 4, 118, 62, 118);
+    g.addColorStop(0, sp.light); g.addColorStop(.55, sp.base); g.addColorStop(1, sp.base);
+    x.fillStyle = g; x.fill(path);
+    x.save(); x.clip(path);
+    x.strokeStyle = sp.edge; x.lineWidth = 9; x.stroke(path);                    // тёмная кайма
+    x.lineWidth = 1.4; x.globalAlpha = .55;                                       // прожилки
+    for (const [ex, ey] of [[20, 18], [14, 40], [34, 60], [44, 92], [70, 116], [96, 108]]) { x.beginPath(); x.moveTo(118, 62); x.quadraticCurveTo((118 + ex) / 2, (62 + ey) / 2 - 6, ex, ey); x.stroke(); }
+    x.restore();
+  }
+  x.fillStyle = sp.spots;
+  for (const [sx, sy, r] of [[18, 20, 3], [12, 32, 2.6], [24, 14, 2.4], [46, 108, 2.6], [64, 116, 2.4]]) { x.beginPath(); x.arc(sx, sy, r, 0, 7); x.fill(); }
+  if (sp.eye) for (const [ex, ey, r] of [[34, 26, 11], [70, 98, 9]]) {
+    x.fillStyle = "#ffd84a"; x.beginPath(); x.arc(ex, ey, r, 0, 7); x.fill();
+    x.fillStyle = "#1a1a2a"; x.beginPath(); x.arc(ex, ey, r * .7, 0, 7); x.fill();
+    x.fillStyle = sp.spots; x.beginPath(); x.arc(ex - r * .15, ey - r * .1, r * .4, 0, 7); x.fill();
+  }
+  return c;
+}
+
+const butterflies = {
+  title: "Бабочки",
+  canvas: c2d,
+  bg: null, fg: null, bw: 0, bh: 0, clouds: [], perches: [], flies: [], wings: null, want: 0, seen: 0, perchW: 0,
+  landscape: balloons.landscape, cloud: balloons.cloud,
+  build() {
+    this.wings = SPECIES.map(wingSprite);
+    for (let i = 0; i < 6; i++) this.clouds.push({ x: rnd(-.2, 1.6), y: rnd(.04, .32), s: rnd(.6, 1.4), v: rnd(.004, .012), sprite: this.cloud() });
+  },
+  // Каждой бабочке свой цветок. После смены размера экрана луг перерисован — места раздаются заново
+  seat() {
+    const order = this.perches.map((_, i) => i).sort(() => Math.random() - .5);
+    const n = Math.min(18, this.perches.length);
+    while (this.flies.length < n) this.flies.push({ x: 0, y: 0, vx: 0, vy: 0, sp: Math.floor(Math.random() * SPECIES.length), s: rnd(.8, 1.25),
+      th: rnd(.08, .55), ph: rnd(0, 7), flap: rnd(0, 7), fly: false, tx: 0, ty: 0, retarget: 0, tilt: 0 });
+    this.flies.length = n;
+    this.flies.forEach((b, i) => { b.perch = order[i]; if (!b.fly) { const p = this.perches[b.perch]; b.x = p.x / H; b.y = p.y / H; } });
+    this.perchW = W;
+  },
+  enter() { this.seen = A.beats; },
+  draw(dt, t) {
+    if (!this.wings) this.build();
+    this.landscape();
+    if (this.perchW !== W || this.flies.length === 0) this.seat();
+    const S = H, asp = W / H, act = A.act;
+    main.globalAlpha = 1; main.globalCompositeOperation = "source-over";
+    main.drawImage(this.bg, 0, 0);
+    for (const c of this.clouds) {
+      c.x += c.v * dt * (1 + act * A.energy);
+      if (c.x > asp + .3) c.x = -.4;
+      const w = .42 * c.s * S;
+      main.globalAlpha = .92; main.drawImage(c.sprite, c.x * S - w / 2, c.y * S, w, w * 180 / 420);
+    }
+    main.globalAlpha = 1;
+    main.drawImage(this.fg, 0, 0);
+
+    // Желание летать: от громкости и баса; быстро взлетают, медленно успокаиваются
+    const goal = act * clamp(A.energy * 1.5 + A.bass * .5 - .04);
+    this.want += (goal - this.want) * follow(dt, goal > this.want ? .3 : 1.6);
+    const beat = A.beats !== this.seen ? (this.seen = A.beats, act * A.bass) : 0;
+    const want = this.want;
+
+    for (const b of this.flies) {
+      const p = this.perches[b.perch];
+      const px = p.x / S, py = p.y / S;
+      if (!b.fly && want > b.th) { b.fly = true; b.vy = -rnd(.15, .3); b.retarget = 0; }
+      if (b.fly) {
+        const home = want < b.th - .03;
+        b.retarget -= dt;
+        if (!home && b.retarget <= 0) {                                  // чем громче, тем выше и дальше разлетаются
+          b.retarget = rnd(1.2, 3.5);
+          b.tx = clamp(rnd(-.05, asp + .05), 0, asp);
+          b.ty = rnd(Math.max(.04, .86 - .9 * want), .9);
+        }
+        if (home) { b.tx = px; b.ty = py; }
+        if (beat > .25 && !home) { const a = rnd(0, 6.28), k = beat * rnd(.2, .5); b.vx += Math.cos(a) * k; b.vy += Math.sin(a) * k - .1; b.retarget = 0; }
+        const dx = b.tx - b.x, dy = b.ty - b.y, d = Math.hypot(dx, dy) + 1e-4;
+        const vmax = home ? Math.min(.22, d * 2.5 + .03) : .1 + .45 * want;
+        b.vx += (dx / d * vmax - b.vx) * follow(dt, home ? .35 : .6);
+        b.vy += (dy / d * vmax - b.vy) * follow(dt, home ? .35 : .6);
+        b.x += b.vx * dt; b.y += b.vy * dt + Math.sin(b.flap * .5) * dt * .03;   // порхающее покачивание
+        if (home && d < .006) { b.fly = false; b.x = px; b.y = py; b.vx = b.vy = 0; }
+        b.flap += dt * (16 + 18 * want);
+        b.tilt += (clamp(b.vx * 2.5, -.5, .5) - b.tilt) * follow(dt, .2);
+      } else {
+        b.x = px; b.y = py; b.tilt += (0 - b.tilt) * follow(dt, .5);
+      }
+      // крылья: в полёте машут, сидя изредка медленно раскрываются
+      b.open = b.fly ? .15 + .85 * Math.abs(Math.sin(b.flap)) : .12 + .8 * Math.pow(Math.max(0, Math.sin(t * .5 + b.ph)), 3);
+    }
+    const order = this.flies.slice().sort((a, b) => a.s - b.s);
+    for (const b of order) {
+      const sz = S * .03 * b.s, k = sz / 62, wing = this.wings[b.sp];
+      main.save(); main.translate(b.x * S, b.y * S); main.rotate(b.tilt);
+      main.save(); main.scale(b.open, 1); main.drawImage(wing, -124 * k, -62 * k, 124 * k, 124 * k); main.restore();
+      main.save(); main.scale(-b.open, 1); main.drawImage(wing, -124 * k, -62 * k, 124 * k, 124 * k); main.restore();
+      main.fillStyle = "#231a14";
+      main.beginPath(); main.ellipse(0, 4 * k, 5 * k, 30 * k, 0, 0, 7); main.fill();
+      main.beginPath(); main.arc(0, -28 * k, 6 * k, 0, 7); main.fill();
+      main.strokeStyle = "#231a14"; main.lineWidth = Math.max(1, 2 * k);
+      for (const side of [-1, 1]) { main.beginPath(); main.moveTo(side * 2 * k, -32 * k); main.quadraticCurveTo(side * 10 * k, -50 * k, side * 16 * k, -56 * k); main.stroke(); }
+      main.restore();
+    }
+  },
+};
+
 /* ───────────── Смена видов ───────────── */
 if (stage.init()) shaderViews.forEach(v => v.init());
 paint.init();
-const views = [bars, ring, light, space, bacteria, paint, fire, dopamine, rider, iron, cyborg, mask, balloons].filter(v => v.ok !== false);
+const views = [bars, ring, light, space, bacteria, paint, fire, dopamine, rider, iron, cyborg, mask, butterflies].filter(v => v.ok !== false);
 const remember = {
   get() { try { return parseInt(localStorage.getItem("eq-view"), 10) || 0; } catch { return 0; } },
   set(i) { try { localStorage.setItem("eq-view", String(i)); } catch {} },

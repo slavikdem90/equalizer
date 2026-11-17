@@ -1955,8 +1955,8 @@ const balloons = {
       f.beginPath(); f.arc(u * W, py, Math.max(1, dpr * (1 + 2.5 * k)), 0, 7); f.fill();
     }
     f.restore();
-    // подсолнухи у самого края экрана: крупные впереди, мелкие дальше
     this.perches = [];
+    // цветы у края экрана: крупные впереди, мелкие дальше; на головку каждого может сесть бабочка
     const sunflower = (px, by, h) => {
       const hx = px + h * rnd(-.08, .08), hy = by - h;
       f.strokeStyle = "#3e8a24"; f.lineWidth = Math.max(2, h * .045);
@@ -1975,10 +1975,53 @@ const balloons = {
       f.fillStyle = c; f.beginPath(); f.arc(hx, hy, R * .6, 0, 7); f.fill();
       this.perches.push({ x: hx, y: hy - R * .35, R });                    // сюда садятся бабочки
     };
-    const sfs = [];
-    for (let i = 0; i < 26; i++) sfs.push([Math.random(), rnd(0, 1)]);
-    sfs.sort((a, b) => a[1] - b[1]);
-    for (const [u, d] of sfs) sunflower(u * W, H * (.93 + .1 * d), H * (.07 + .09 * d));
+    const stem = (px, by, hx, hy, h, col = "#3e8a24") => {
+      f.strokeStyle = col; f.lineWidth = Math.max(1.5, h * .035);
+      f.beginPath(); f.moveTo(px, by + h * .2); f.quadraticCurveTo(px + h * .04, by - h * .5, hx, hy); f.stroke();
+      f.fillStyle = "#4a9a2a";
+      const side = Math.random() < .5 ? -1 : 1, ly = by - h * rnd(.25, .5);
+      f.beginPath(); f.ellipse(px + side * h * .1, ly, h * .11, h * .04, side * -.5, 0, 7); f.fill();
+    };
+    const petals = (hx, hy, n, R, len, wid, cols, rot = 0) => {
+      for (let k = 0; k < n; k++) {
+        const a = rot + k / n * Math.PI * 2;
+        f.fillStyle = cols[k % cols.length];
+        f.beginPath(); f.ellipse(hx + Math.cos(a) * R, hy + Math.sin(a) * R, len, wid, a, 0, 7); f.fill();
+      }
+    };
+    const dot = (hx, hy, r, a, b) => {
+      const g = f.createRadialGradient(hx - r * .3, hy - r * .3, 0, hx, hy, r);
+      g.addColorStop(0, a); g.addColorStop(1, b); f.fillStyle = g; f.beginPath(); f.arc(hx, hy, r, 0, 7); f.fill();
+    };
+    const FLOWERS = {
+      daisy(px, by, h) { const hx = px + h * rnd(-.1, .1), hy = by - h; stem(px, by, hx, hy, h); const R = h * .23;
+        petals(hx, hy, 16, R * .62, R * .55, R * .14, ["#ffffff", "#f4f4ee"]); dot(hx, hy, R * .32, "#ffe25a", "#e0a010"); return { x: hx, y: hy - R * .2, R }; },
+      poppy(px, by, h) { const hx = px + h * rnd(-.1, .1), hy = by - h; stem(px, by, hx, hy, h, "#4a8a2a"); const R = h * .25;
+        petals(hx, hy, 5, R * .42, R * .58, R * .5, ["#e8241c", "#ff3b2a", "#d81e18"], rnd(0, 6)); dot(hx, hy, R * .22, "#3a3a3a", "#0a0a0a"); return { x: hx, y: hy - R * .25, R }; },
+      cornflower(px, by, h) { const hx = px + h * rnd(-.1, .1), hy = by - h; stem(px, by, hx, hy, h, "#5a8a4a"); const R = h * .21;
+        for (let k = 0; k < 12; k++) { const a = k / 12 * Math.PI * 2; f.fillStyle = k % 2 ? "#3b6cff" : "#5a8cff";
+          f.beginPath(); f.moveTo(hx + Math.cos(a - .2) * R * .3, hy + Math.sin(a - .2) * R * .3); f.lineTo(hx + Math.cos(a) * R * 1.1, hy + Math.sin(a) * R * 1.1); f.lineTo(hx + Math.cos(a + .2) * R * .3, hy + Math.sin(a + .2) * R * .3); f.closePath(); f.fill(); }
+        dot(hx, hy, R * .3, "#4a3aa8", "#24186a"); return { x: hx, y: hy - R * .2, R }; },
+      cosmos(px, by, h) { const hx = px + h * rnd(-.1, .1), hy = by - h; stem(px, by, hx, hy, h); const R = h * .24;
+        const c = ["#ff7fc0", "#ffa6d6", "#e85aa8", "#ffffff"][Math.floor(Math.random() * 4)];
+        petals(hx, hy, 8, R * .55, R * .5, R * .27, [c], rnd(0, 6)); dot(hx, hy, R * .22, "#ffd84a", "#d08a10"); return { x: hx, y: hy - R * .2, R }; },
+      tulip(px, by, h) { const hx = px + h * rnd(-.06, .06), hy = by - h; stem(px, by, hx, hy, h, "#4a9a3a"); const R = h * .18;
+        const c = ["#ff3a4a", "#ffcf2a", "#ff6fae", "#ff8a1f"][Math.floor(Math.random() * 4)], d = mixRgb(hexRgb(c), [0, 0, 0], .25);
+        f.fillStyle = rgbStr(d); f.beginPath(); f.ellipse(hx - R * .35, hy, R * .45, R * .8, -.25, 0, 7); f.fill(); f.beginPath(); f.ellipse(hx + R * .35, hy, R * .45, R * .8, .25, 0, 7); f.fill();
+        f.fillStyle = c; f.beginPath(); f.ellipse(hx, hy + R * .05, R * .48, R * .85, 0, 0, 7); f.fill(); return { x: hx, y: hy - R * .75, R }; },
+      lavender(px, by, h) { const hx = px + h * rnd(-.05, .05), hy = by - h; stem(px, by, hx, hy + h * .05, h, "#6a8a5a");
+        for (let k = 0; k < 11; k++) { const yy = hy + h * .3 * (k / 10), r = h * (.032 - .012 * (k / 10));
+          f.fillStyle = k % 2 ? "#9a6ad8" : "#b48af0"; f.beginPath(); f.arc(hx - r * .6, yy, r, 0, 7); f.arc(hx + r * .6, yy + r * .4, r, 0, 7); f.fill(); }
+        return { x: hx, y: hy - h * .02, R: h * .05 }; },
+    };
+    const kinds = ["sunflower", "sunflower", "daisy", "daisy", "poppy", "poppy", "cornflower", "cosmos", "cosmos", "tulip", "lavender"];
+    const fl = [];
+    for (let i = 0; i < 80; i++) fl.push([Math.random(), rnd(0, 1), kinds[Math.floor(Math.random() * kinds.length)]]);
+    fl.sort((a, b) => a[1] - b[1]);
+    for (const [u, d, kind] of fl) {
+      const by = H * (.92 + .1 * d), h = H * (.06 + .08 * d) * (kind === "sunflower" ? 1.2 : kind === "lavender" ? 1.1 : 1);
+      if (kind === "sunflower") sunflower(u * W, by, h); else this.perches.push(FLOWERS[kind](u * W, by, h));
+    }
   },
   spawn(y) {
     const z = rnd(.35, 1), asp = W / H;
@@ -2143,7 +2186,7 @@ const butterflies = {
   // Каждой бабочке свой цветок. После смены размера экрана луг перерисован — места раздаются заново
   seat() {
     const order = this.perches.map((_, i) => i).sort(() => Math.random() - .5);
-    const n = Math.min(18, this.perches.length);
+    const n = Math.min(40, this.perches.length);
     while (this.flies.length < n) this.flies.push({ x: 0, y: 0, vx: 0, vy: 0, sp: Math.floor(Math.random() * SPECIES.length), s: rnd(.8, 1.25),
       th: rnd(.08, .55), ph: rnd(0, 7), flap: rnd(0, 7), fly: false, tx: 0, ty: 0, retarget: 0, tilt: 0 });
     this.flies.length = n;
@@ -2192,6 +2235,7 @@ const butterflies = {
         b.vx += (dx / d * vmax - b.vx) * follow(dt, home ? .35 : .6);
         b.vy += (dy / d * vmax - b.vy) * follow(dt, home ? .35 : .6);
         b.x += b.vx * dt; b.y += b.vy * dt + Math.sin(b.flap * .5) * dt * .03;   // порхающее покачивание
+        if (b.y < .02) { b.y = .02; b.vy = Math.abs(b.vy) * .5; }       // не улетают за верх экрана
         if (home && d < .006) { b.fly = false; b.x = px; b.y = py; b.vx = b.vy = 0; }
         b.flap += dt * (16 + 18 * want);
         b.tilt += (clamp(b.vx * 2.5, -.5, .5) - b.tilt) * follow(dt, .2);
@@ -2203,7 +2247,7 @@ const butterflies = {
     }
     const order = this.flies.slice().sort((a, b) => a.s - b.s);
     for (const b of order) {
-      const sz = S * .03 * b.s, k = sz / 62, wing = this.wings[b.sp];
+      const sz = S * .026 * b.s, k = sz / 62, wing = this.wings[b.sp];
       main.save(); main.translate(b.x * S, b.y * S); main.rotate(b.tilt);
       main.save(); main.scale(b.open, 1); main.drawImage(wing, -124 * k, -62 * k, 124 * k, 124 * k); main.restore();
       main.save(); main.scale(-b.open, 1); main.drawImage(wing, -124 * k, -62 * k, 124 * k, 124 * k); main.restore();
